@@ -237,6 +237,8 @@ const NAV = [
   { id: 'reports',    label: 'التقارير والتحليلات', ico: '📊', ownerOnly: true },
   { id: 'customers',  label: 'إدارة العملاء',   ico: '👥', ownerOnly: false },
   { id: 'suppliers',  label: 'إدارة الموردين',  ico: '🤝', ownerOnly: false },
+  { id: 'debts-customers', label: 'مديونيات العملاء', ico: '💳', ownerOnly: false },
+  { id: 'debts-suppliers', label: 'مديونيات الموردين', ico: '🧾', ownerOnly: false },
   { id: 'branches',   label: 'إدارة الفروع',    ico: '📍', ownerOnly: true  },
   { id: 'employees',  label: 'إدارة الموظفين',  ico: '👤', ownerOnly: true  },
   { id: 'settings',   label: 'الإعدادات',      ico: '⚙️', ownerOnly: true  },
@@ -246,9 +248,10 @@ const NAV_EN = {
   dashboard: 'Dashboard', sales: 'Sales', purchases: 'Purchases', products: 'Products',
   inventory: 'Inventory', accounts: 'Accounts', reports: 'Reports & Analytics',
   customers: 'Customers', suppliers: 'Suppliers', branches: 'Branches',
+  'debts-customers': 'Customer Debts', 'debts-suppliers': 'Supplier Debts',
   employees: 'Employees', settings: 'Settings', help: 'Help & Support'
 };
-const ALL_INTERFACES = ['dashboard', 'sales', 'purchases', 'products', 'inventory', 'customers', 'suppliers'];
+const ALL_INTERFACES = ['dashboard', 'sales', 'purchases', 'products', 'inventory', 'customers', 'suppliers', 'debts-customers', 'debts-suppliers'];
 
 function visibleNav() {
   if (isOwner()) return NAV;
@@ -265,7 +268,11 @@ function buildNav() {
   $('main-nav').innerHTML = visibleNav().map((n) =>
     `<button class="nav-item" data-page="${n.id}"><span class="ico">${n.ico}</span> ${uiLang === 'en' ? (NAV_EN[n.id] || n.label) : n.label}</button>`).join('');
   document.querySelectorAll('.nav-item[data-page]').forEach((b) =>
-    b.addEventListener('click', () => go(b.dataset.page)));
+    b.addEventListener('click', () => {
+      go(b.dataset.page);
+      // في وضع الموبايل يُغلق الدرج بعد الانتقال للصفحة
+      if (document.body.classList.contains('mobile-view') || window.innerWidth <= 768) document.body.classList.add('sidebar-hidden');
+    }));
 }
 
 // --- الساعة الحية في الفوتر + الجرس + اللغة + القائمة ---
@@ -301,6 +308,26 @@ function toggleLang() {
 $('menu-btn').addEventListener('click', () => document.body.classList.toggle('sidebar-hidden'));
 $('settings-btn').addEventListener('click', () => go('settings'));
 $('lang-btn').addEventListener('click', toggleLang);
+
+// --- تبديل عرض الموبايل / الكمبيوتر — يُحفظ اختيار المستخدم ويُستعاد عند التحميل ---
+const VIEW_MODE_KEY = 'alfalaky-view-mode';
+function applyViewMode(mode) {
+  const mobile = mode === 'mobile';
+  document.body.classList.toggle('mobile-view', mobile);
+  if (mobile) document.body.classList.add('sidebar-hidden'); // الدرج مغلق افتراضياً في وضع الموبايل
+  const btn = $('view-toggle-btn');
+  if (btn) btn.textContent = mobile ? '🖥️ عرض الكمبيوتر' : '📱 عرض الموبايل';
+  try { localStorage.setItem(VIEW_MODE_KEY, mobile ? 'mobile' : 'desktop'); } catch (e) { /* تجاهل */ }
+}
+let savedViewMode = 'desktop';
+try { savedViewMode = localStorage.getItem(VIEW_MODE_KEY) || 'desktop'; } catch (e) { /* تجاهل */ }
+if (savedViewMode === 'mobile') applyViewMode('mobile');
+// على الشاشات الصغيرة الحقيقية تبدأ القائمة الجانبية مغلقة (درج يُفتح من ☰)
+if (window.innerWidth <= 768) document.body.classList.add('sidebar-hidden');
+window.addEventListener('resize', () => { if (window.innerWidth <= 768) document.body.classList.add('sidebar-hidden'); });
+$('view-toggle-btn').addEventListener('click', () => {
+  applyViewMode(document.body.classList.contains('mobile-view') ? 'desktop' : 'mobile');
+});
 $('ai-start-btn').addEventListener('click', () => go('ai'));
 $('bell-btn').addEventListener('click', () => { renderNotifDropdown(); $('notif-dropdown').classList.toggle('hidden'); });
 document.addEventListener('click', (e) => {
@@ -316,8 +343,10 @@ async function go(page) {
   const renderers = { dashboard: renderDashboard, sales: renderPOS, purchases: renderPurchases,
     products: renderProducts, inventory: renderInventory, accounts: renderAccounts, reports: renderReports,
     customers: () => renderContacts('customers'), suppliers: () => renderContacts('suppliers'),
+    'debts-customers': () => renderDebts('customers'), 'debts-suppliers': () => renderDebts('suppliers'),
     branches: renderBranches, employees: renderEmployees, settings: renderSettings,
     ai: renderAI, help: renderHelp };
+  if (!renderers[page]) { await go('dashboard'); return; }
   $('page').innerHTML = '<div class="empty">جارٍ تحميل البيانات من Firestore...</div>';
   try { await renderers[page](); }
   catch (err) { $('page').innerHTML = `<div class="error show">${esc(firestoreErrorMessage(err))}</div>`; }
@@ -368,11 +397,13 @@ function productStock(p) { return balancesCache[p.id] ?? null; } // null = لا 
 // 4) لوحة التحكم — كل المؤشرات من Firestore، وبدون بيانات تظهر حالات فارغة
 // ============================================================================
 async function renderDashboard() {
-  const [sales, purchases, customers, bals] = await Promise.all([
+  const [sales, purchases, customers, bals, salesPays, purchPays] = await Promise.all([
     loadCollection('salesInvoices'),
     loadCollection('purchaseInvoices'),
     loadCollection('customers'),
-    loadCollection('stockBalances')
+    loadCollection('stockBalances'),
+    loadCollection('salesPayments'),
+    loadCollection('purchasePayments')
   ]);
   await loadProducts();
   const posted = sales.filter((s) => s.status === 'posted');
@@ -409,6 +440,21 @@ async function renderDashboard() {
     return a + Number(b.quantity || 0) * Number(pr.purchasePricePiasters || 0);
   }, 0);
   const activeCustomers = customers.filter((c) => c.isActive !== false).length;
+
+  // مديونيات العملاء والموردين (مشتقة: المتبقي = الإجمالي − المدفوع أولاً − مجموع الدفعات)
+  const salesPayByInv = {};
+  salesPays.forEach((p) => { if (p.salesInvoiceId) salesPayByInv[p.salesInvoiceId] = (salesPayByInv[p.salesInvoiceId] || 0) + Number(p.amountPiasters || 0); });
+  const purchPayByInv = {};
+  purchPays.forEach((p) => { if (p.purchaseInvoiceId) purchPayByInv[p.purchaseInvoiceId] = (purchPayByInv[p.purchaseInvoiceId] || 0) + Number(p.amountPiasters || 0); });
+  const custDebtTotal = posted.reduce((a, s) => a + remainingOf(s, salesPayByInv), 0);
+  const custDebtCount = posted.filter((s) => remainingOf(s, salesPayByInv) > 0).length;
+  const supDebtTotal = postedPurchases.reduce((a, p) => a + remainingOf(p, purchPayByInv), 0);
+  const supDebtCount = postedPurchases.filter((p) => remainingOf(p, purchPayByInv) > 0).length;
+  const debtCardsHTML = `
+    <div class="debt-cards">
+      <div class="card debt-card" data-go-debts="debts-customers"><div class="kpi-text"><div class="value">${fmtEGPNum(custDebtTotal)}<span class="unit">ج.م</span></div><div class="label">💳 مديونيات العملاء</div><div class="delta flat">${custDebtCount} فاتورة مفتوحة — اضغط للتفاصيل</div></div><div class="ico">💳</div></div>
+      <div class="card debt-card" data-go-debts="debts-suppliers"><div class="kpi-text"><div class="value">${fmtEGPNum(supDebtTotal)}<span class="unit">ج.م</span></div><div class="label">🧾 مديونيات الموردين</div><div class="delta flat">${supDebtCount} فاتورة مفتوحة — اضغط للتفاصيل</div></div><div class="ico">🧾</div></div>
+    </div>`;
 
   // أكثر المنتجات مبيعاً (من بنود آخر 60 فاتورة)
   const soldQty = {};
@@ -508,6 +554,7 @@ async function renderDashboard() {
       <div class="card kpi"><div class="kpi-text"><div class="value" data-countup="${profit}" data-countup-fmt="egp">${fmtEGPNum(profit)}<span class="unit">ج.م</span></div><div class="label">صافي الربح</div><div class="delta ${dProfit.cls}">${dProfit.text}</div></div><div class="ico">📈</div></div>
       <div class="card kpi"><div class="kpi-text"><div class="value" data-countup="${activeCustomers}" data-countup-fmt="int-en">${Number(activeCustomers).toLocaleString('en-US')}</div><div class="label">عملاء نشطين</div><div class="delta flat">—</div></div><div class="ico">👥</div></div>
     </div>
+    ${debtCardsHTML}
     ${hasAny ? '' : `<div class="card">${emptyState('لا توجد بيانات بعد في Firestore — أنشئ منتجات وفواتير من صفحتي المنتجات والمبيعات، وستظهر المؤشرات هنا تلقائياً.')}</div>`}
     <div class="dash-row2">
       <div class="card"><h3>🏆 أكثر المنتجات مبيعاً</h3>
@@ -552,6 +599,7 @@ async function renderDashboard() {
 
   $('dash-range').addEventListener('change', (e) => { dashRange = Number(e.target.value); renderDashboard(); });
   $('branch-range').addEventListener('change', (e) => { branchRange = e.target.value; renderDashboard(); });
+  document.querySelectorAll('[data-go-debts]').forEach((el) => el.addEventListener('click', () => go(el.dataset.goDebts)));
   $('alerts-all-btn').addEventListener('click', (e) => {
     const more = document.querySelector('.alerts-more');
     if (more) { more.classList.toggle('hidden'); e.target.textContent = more.classList.contains('hidden') ? 'عرض الكل' : 'عرض أقل'; }
@@ -792,6 +840,7 @@ async function cleanupDemoData() {
 
 // --- المسح بالكاميرا: BarcodeDetector + fallback يدوي ---
 let scanStream = null, scanRaf = null;
+let invoiceScanTarget = null; // عند المسح من نموذج فاتورة: يُستدعى بالمنتج بدلاً من الانتقال لصفحة المنتجات
 async function openScanner() {
   $('scan-modal').classList.remove('hidden');
   $('scan-result').innerHTML = '';
@@ -848,6 +897,7 @@ async function handleScannedCode(code) {
   }
   if (found) {
     $('scan-result').innerHTML = '';
+    if (invoiceScanTarget) { const cb = invoiceScanTarget; invoiceScanTarget = null; cb(found); return; }
     if (currentPage !== 'products') await go('products');
     $('products-grid').innerHTML = productCardHTML(found);
     bindProductButtons();
@@ -956,6 +1006,7 @@ async function renderPOS() {
         <div class="toolbar">
           <input id="pos-search" type="search" placeholder="ابحث برقم القطعة أو الاسم...">
           <button class="btn scan small" id="scan-btn-pos">📷 مسح</button>
+          ${canCreateInvoice('sales') ? '<button class="btn small" id="new-invoice-btn" type="button">🧾 إنشاء فاتورة</button>' : ''}
         </div>
         <div id="pos-results" class="grid-3"></div>
       </div>
@@ -975,7 +1026,8 @@ async function renderPOS() {
         <div class="error" id="pos-error"></div>
         <p class="note">رقم الفاتورة يُولَّد تلقائياً. لا يمكن حذف فاتورة منشورة — الإلغاء يكون بعكسها فقط.</p>
       </div>
-    </div>`;
+    </div>
+    <div class="card" style="margin-top:14px"><h3>🧾 آخر فواتير المبيعات</h3><div id="recent-sales-invoices">${emptyState('جارٍ التحميل...')}</div></div>`;
   const drawCart = () => {
     const total = posCart.reduce((a, l) => a + l.qty * Number(l.product.sellingPricePiasters || 0), 0);
     $('pos-cart').innerHTML = posCart.length ? posCart.map((l, i) => `
@@ -1000,6 +1052,8 @@ async function renderPOS() {
   };
   $('pos-search').addEventListener('input', (e) => drawResults(e.target.value));
   $('scan-btn-pos').addEventListener('click', openScanner);
+  const newInvBtn = $('new-invoice-btn');
+  if (newInvBtn) newInvBtn.addEventListener('click', () => renderInvoiceForm('sales'));
   $('pos-clear').addEventListener('click', () => { posCart = []; drawCart(); });
   const posCleanupBtn = $('demo-cleanup-btn');
   if (posCleanupBtn) posCleanupBtn.addEventListener('click', cleanupDemoData);
@@ -1044,6 +1098,25 @@ async function renderPOS() {
     } catch (err) { showError($('pos-error'), firestoreErrorMessage(err)); }
   });
   drawCart(); await drawResults('');
+  // آخر فواتير المبيعات مع المتبقي المشتق وحالة السداد
+  const [recentSales, recentPays] = await Promise.all([loadCollection('salesInvoices'), loadCollection('salesPayments')]);
+  const recentEl = $('recent-sales-invoices');
+  if (recentEl) {
+    const payMap = {};
+    recentPays.forEach((p) => { if (p.salesInvoiceId) payMap[p.salesInvoiceId] = (payMap[p.salesInvoiceId] || 0) + Number(p.amountPiasters || 0); });
+    const rows = recentSales.filter((s) => s.status === 'posted').sort((a, b) => tsToDate(b.createdAt) - tsToDate(a.createdAt)).slice(0, 10);
+    recentEl.innerHTML = rows.length ? `<table><tr><th>رقم الفاتورة</th><th>العميل</th><th>الإجمالي</th><th>المتبقي</th><th>الحالة</th><th></th></tr>
+      ${rows.map((s) => {
+        const rem = remainingOf(s, payMap);
+        const st = payStatusOf(Number(s.totalPiasters || 0), Number(s.totalPiasters || 0) - rem);
+        const cust = customers.find((c) => c.id === s.customerId);
+        return `<tr><td dir="ltr">${esc(s.invoiceNumber || s.id)}${demoBadge(s)}</td><td>${esc(cust ? cust.name_ar : 'عميل نقدي')}</td>
+        <td class="num">${fmtEGP(s.totalPiasters)}</td><td class="num">${fmtEGP(rem)}</td>
+        <td><span class="badge ${payStatusBadgeCls(st)}">${payStatusLabel(st)}</span></td>
+        <td><button class="btn small secondary" data-view-sinv="${s.id}">عرض / طباعة</button></td></tr>`;
+      }).join('')}</table>` : emptyState('لا توجد فواتير مبيعات بعد.');
+    recentEl.querySelectorAll('[data-view-sinv]').forEach((b) => b.addEventListener('click', () => renderInvoiceDetail('sales', b.dataset.viewSinv)));
+  }
 }
 
 // ============================================================================
@@ -1055,26 +1128,37 @@ async function renderPurchases() {
   const supName = (id) => (suppliers.find((s) => s.id === id) || {}).name_ar || '—';
   $('page').innerHTML = `
     <h2 class="page-title">📦 المشتريات</h2>
-    <p class="page-sub">فواتير الشراء المنشورة في Firestore. إضافة فاتورة شراء جديدة تتم من التطبيق الكامل؛ هنا تُعرض الفواتير وأرصدة الموردين.</p>
-    ${list.length ? `<div class="card"><table><tr><th>رقم الفاتورة</th><th>المورد</th><th>الحالة</th><th>الإجمالي</th><th>المتبقي</th><th>التاريخ</th></tr>
+    <p class="page-sub">فواتير الشراء المنشورة في Firestore — أنشئ فاتورة شراء جديدة مباشرة باختيار المنتجات دون سلة، ثم اطبعها.</p>
+    <div class="toolbar">${canCreateInvoice('purchase') ? '<button class="btn small" id="new-purchase-invoice-btn">➕ إنشاء فاتورة شراء</button>' : ''}</div>
+    ${list.length ? `<div class="card"><table><tr><th>رقم الفاتورة</th><th>المورد</th><th>الحالة</th><th>الإجمالي</th><th>المتبقي</th><th>التاريخ</th><th></th></tr>
       ${list.sort((a, b) => tsToDate(b.createdAt) - tsToDate(a.createdAt)).map((p) => `
       <tr><td dir="ltr">${esc(p.invoiceNumber || p.id)}${demoBadge(p)}</td><td>${esc(supName(p.supplierId))}</td>
       <td><span class="badge ${p.status === 'posted' ? 'ok' : 'warn'}">${esc(p.status || '')}</span></td>
       <td class="num">${fmtEGP(p.totalPiasters)}</td><td class="num">${fmtEGP(p.remainingPiasters)}</td>
-      <td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td></tr>`).join('')}</table></div>`
+      <td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td>
+      <td><button class="btn small secondary" data-view-pinv="${p.id}">عرض / طباعة</button></td></tr>`).join('')}</table></div>`
     : `<div class="card">${emptyState('لا توجد فواتير شراء بعد في Firestore.')}</div>`}`;
+  const npb = $('new-purchase-invoice-btn');
+  if (npb) npb.addEventListener('click', () => renderInvoiceForm('purchase'));
+  document.querySelectorAll('[data-view-pinv]').forEach((b) => b.addEventListener('click', () => renderInvoiceDetail('purchase', b.dataset.viewPinv)));
 }
 
 // ============================================================================
 // 9) الحسابات والتقارير (مالك فقط) — من القيود والفواتير الحقيقية
 // ============================================================================
 async function renderAccounts() {
-  const [entries, expenses, cashboxes] = await Promise.all([
-    loadCollection('journalEntries'), loadCollection('expenses'), loadCollection('cashboxes')
+  const [entries, expenses, cashboxes, salesInvs, purchInvs, salesPays, purchPays] = await Promise.all([
+    loadCollection('journalEntries'), loadCollection('expenses'), loadCollection('cashboxes'),
+    loadCollection('salesInvoices'), loadCollection('purchaseInvoices'),
+    loadCollection('salesPayments'), loadCollection('purchasePayments')
   ]);
   const debit = entries.filter((e) => e.status !== 'reversed').reduce((a, e) => a + Number(e.totalDebitPiasters || 0), 0);
   const credit = entries.filter((e) => e.status !== 'reversed').reduce((a, e) => a + Number(e.totalCreditPiasters || 0), 0);
   const expTotal = expenses.filter((e) => e.status !== 'cancelled').reduce((a, e) => a + Number(e.amountPiasters || 0), 0);
+  const spByInv = {}; salesPays.forEach((p) => { if (p.salesInvoiceId) spByInv[p.salesInvoiceId] = (spByInv[p.salesInvoiceId] || 0) + Number(p.amountPiasters || 0); });
+  const ppByInv = {}; purchPays.forEach((p) => { if (p.purchaseInvoiceId) ppByInv[p.purchaseInvoiceId] = (ppByInv[p.purchaseInvoiceId] || 0) + Number(p.amountPiasters || 0); });
+  const custDebtTotal = salesInvs.filter((s) => s.status === 'posted').reduce((a, s) => a + remainingOf(s, spByInv), 0);
+  const supDebtTotal = purchInvs.filter((s) => s.status === 'posted').reduce((a, s) => a + remainingOf(s, ppByInv), 0);
   $('page').innerHTML = `
     <h2 class="page-title">💰 الحسابات</h2>
     <div class="kpi-grid">
@@ -1086,11 +1170,21 @@ async function renderAccounts() {
     <div class="card"><h3>الخزن</h3>
       ${cashboxes.length ? cashboxes.map((c) => `<div class="list-row"><span>${esc(c.name_ar)}</span><b>${fmtEGP(c.balancePiasters)}</b></div>`).join('') : emptyState('لا توجد خزن مسجلة بعد.')}
     </div>
+    <div class="card" style="margin-top:14px"><h3>💳 المديونيات</h3>
+      <div class="list-row"><span>مديونيات العملاء (فواتير مفتوحة)</span><b>${fmtEGP(custDebtTotal)}</b></div>
+      <div class="list-row"><span>مديونيات الموردين (فواتير مفتوحة)</span><b>${fmtEGP(supDebtTotal)}</b></div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="btn small" id="acc-debts-cust">مديونيات العملاء</button>
+        <button class="btn small" id="acc-debts-sup">مديونيات الموردين</button>
+      </div>
+    </div>
     <div class="card" style="margin-top:14px"><h3>أحدث القيود المحاسبية</h3>
       ${entries.length ? `<table><tr><th>رقم القيد</th><th>الوصف</th><th>مدين</th><th>دائن</th><th>الحالة</th></tr>
       ${entries.slice(0, 20).map((e) => `<tr><td dir="ltr">${esc(e.entryNumber || e.id)}</td><td>${esc(e.description_ar || '')}</td>
       <td class="num">${fmtEGP(e.totalDebitPiasters)}</td><td class="num">${fmtEGP(e.totalCreditPiasters)}</td>
       <td>${esc(e.status || '')}</td></tr>`).join('')}</table>` : emptyState('لا توجد قيود محاسبية بعد.')}</div>`;
+  $('acc-debts-cust').addEventListener('click', () => go('debts-customers'));
+  $('acc-debts-sup').addEventListener('click', () => go('debts-suppliers'));
 }
 async function renderReports() {
   const sales = (await loadCollection('salesInvoices')).filter((s) => s.status === 'posted');
@@ -1375,5 +1469,761 @@ async function renderHelp() {
       <div class="card"><h3>📦 المنتجات والمخزون</h3><p style="line-height:1.9">صفحة «المنتجات» هي الكتالوج الكامل: إضافة وتعديل وإيقاف/تفعيل حسب صلاحيتك. وصفحة «المخزون» تعرض الأرصدة وحالتها (متوفر/منخفض/نافد) وقيمة المخزون.</p></div>
       <div class="card"><h3>👤 الموظفون</h3><p style="line-height:1.9">المالك فقط ينشئ حسابات الموظفين ويحدد واجهاتهم وصلاحياتهم من صفحة إدارة الموظفين، ويفعّل أو يوقف أي حساب في أي وقت — وسجلات الموظف السابقة تبقى محفوظة دائماً.</p></div>
       <div class="card"><h3>🔥 البيانات</h3><p style="line-height:1.9">كل البيانات في مشروع Firebase «al-falaky-erp» (Firestore في eur3) وتظهر الأرقام من استعلامات حية. عند ظهور خطأ صلاحيات، فحسابك يحتاج تصاريح (orgId / role / branchIds) يضبطها المالك.</p></div>
+      <div class="card"><h3>💳 المديونيات والفواتير</h3><p style="line-height:1.9">من «مديونيات العملاء/الموردين» ترى كل جهة ورصيدها والفواتير المفتوحة وتواريخ استحقاقها، وتسجّل تسديد جزء بأي مبلغ وطريقة دفع (نقدي/تحويل/فودافون كاش/شيك)، ويظهر المتبقي فوراً. ومن زر «إنشاء فاتورة» في المبيعات أو المشتريات تنشئ فاتورة مباشرة باختيار المنتج بالبحث أو الكاميرا دون سلة، ثم تطبعها A4 باسم الفلكي من زر «طباعة».</p></div>
     </div>`;
+}
+
+// ============================================================================
+// 15) المديونيات والدفعات وإنشاء الفواتير والطباعة
+// ملاحظات قواعد Firestore (منشورة — لا تُفترض قابليتها للتغيير):
+// • الفاتورة المنشورة لا يُحدَّث فيها paid/remaining أبداً — المتبقي وحالة
+//   السداد مشتقّان في العميل: المتبقي = الإجمالي − المدفوع عند الإنشاء −
+//   مجموع الدفعات اللاحقة من salesPayments / purchasePayments.
+// • الدفعات append-only: إنشاء فقط، بلا تعديل أو حذف.
+// • رصيد العميل/المورد المخزّن هو currentBalancePiasters ويُحدَّث مع كل دفعة
+//   ومع كل فاتورة آجلة جديدة.
+// • الصندوق/البنك يُحدَّثان بأفضل جهد منفصل (غير ذري مع الدفعة) حتى لا يفشل
+//   تسجيل دفعة صحيحة بسبب رفض قاعدة على الصندوق (مثلاً دور sales لا يحدّث
+//   الخزائن، أو رصيد لا يكفي) — ويُعرض سبب عدم التنفيذ للمستخدم.
+// • كل الاستعلامات بدون orderBy على الخادم (تجنباً للفهارس المركبة) —
+//   الترتيب والتصفية في العميل.
+// ============================================================================
+const PAY_METHODS = [
+  ['cash', '💵 نقدي'], ['bank_transfer', '🏦 تحويل بنكي'], ['vodafone_cash', '📱 فودافون كاش'],
+  ['cheque', '🧾 شيك'], ['visa', '💳 فيزا'], ['instapay', '⚡ إنستاباي']
+];
+const payMethodLabel = (m) => (PAY_METHODS.find(([v]) => v === m) || [null, m || '—'])[1];
+const payStatusOf = (total, paid) => paid >= total ? 'paid' : paid > 0 ? 'partial' : 'credit';
+const payStatusLabel = (s) => ({ paid: 'مدفوع', partial: 'جزئي', credit: 'آجل' }[s] || s);
+const payStatusBadgeCls = (s) => s === 'paid' ? 'ok' : s === 'partial' ? 'warn' : '';
+function remainingOf(inv, payByInv) {
+  return Math.max(0, Number(inv.totalPiasters || 0) - Number(inv.paidPiasters || 0) - (payByInv[inv.id] || 0));
+}
+function paidOf(inv, payByInv) { return Number(inv.totalPiasters || 0) - remainingOf(inv, payByInv); }
+function dueDateOf(inv) {
+  if (inv.dueDate) return tsToDate(inv.dueDate);
+  return new Date(tsToDate(inv.date || inv.createdAt).getTime() + 30 * 24 * 3600 * 1000);
+}
+function dateInputVal(d) {
+  const x = d instanceof Date ? d : tsToDate(d);
+  if (!x || isNaN(x)) return '';
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+}
+function parseDateInput(v) {
+  if (!v) return null;
+  const [y, m, d] = v.split('-').map(Number);
+  return Timestamp.fromDate(new Date(y, m - 1, d, 12, 0, 0));
+}
+function canRecordPayment(kind) {
+  return kind === 'customers'
+    ? ['owner', 'manager', 'sales', 'accountant'].includes(me.role)
+    : ['owner', 'manager', 'accountant'].includes(me.role);
+}
+function canCreateInvoice(kind) {
+  return kind === 'sales'
+    ? ['owner', 'manager', 'sales'].includes(me.role)
+    : ['owner', 'manager', 'inventory', 'accountant'].includes(me.role);
+}
+
+// --- أثر الدفعة على الصندوق/البنك (أفضل جهد — لا يفشل تسجيل الدفعة) ---
+async function applyCashMovement(method, amountPiasters, direction) {
+  if (!amountPiasters || amountPiasters <= 0) return '';
+  if (method === 'vodafone_cash' || method === 'cheque') {
+    return 'ملاحظة: طريقة الدفع (فودافون كاش / شيك) لا تؤثر على رصيد الصندوق — سُجّلت الدفعة وخصمت من المديونية فقط.';
+  }
+  const isBank = method === 'bank_transfer' || method === 'visa' || method === 'instapay';
+  try {
+    if (!isBank) {
+      const boxes = await loadCollection('cashboxes');
+      let box = boxes.find((c) => c.isActive !== false && c.branchId === DEFAULT_BRANCH)
+        || boxes.find((c) => c.isActive !== false);
+      if (!box) {
+        await setDoc(doc(db, 'cashboxes', 'cash_main'), {
+          orgId, branchId: DEFAULT_BRANCH, name_ar: 'الصندوق الرئيسي', balancePiasters: direction > 0 ? amountPiasters : 0,
+          isActive: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+        });
+        return direction > 0 ? '' : 'أُنشئ «الصندوق الرئيسي» برصيد صفر — لم يُخصم منه مبلغ الدفعة لعدم كفاية الرصيد.';
+      }
+      const cur = Number(box.balancePiasters || 0);
+      const next = cur + direction * amountPiasters;
+      if (next < 0) return `رصيد «${esc(box.name_ar)}» (${fmtEGP(cur)}) لا يكفي لخصم ${fmtEGP(amountPiasters)} — سُجّلت الدفعة وخصمت من المديونية دون خصم من الصندوق.`;
+      await updateDoc(doc(db, 'cashboxes', box.id), { balancePiasters: next, updatedAt: serverTimestamp() });
+      return '';
+    }
+    const banks = await loadCollection('bankAccounts');
+    let bank = banks.find((b) => b.isActive !== false);
+    if (!bank) {
+      await setDoc(doc(db, 'bankAccounts', 'bank_main'), {
+        orgId, bankName_ar: 'الحساب البنكي الرئيسي', bankName_en: '', accountNumber: '',
+        balancePiasters: direction > 0 ? amountPiasters : 0,
+        isActive: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+      });
+      return direction > 0 ? '' : 'أُنشئ «الحساب البنكي الرئيسي» برصيد صفر — لم يُخصم منه مبلغ الدفعة لعدم كفاية الرصيد.';
+    }
+    const cur = Number(bank.balancePiasters || 0);
+    const next = cur + direction * amountPiasters;
+    if (next < 0) return `رصيد الحساب البنكي (${fmtEGP(cur)}) لا يكفي لخصم ${fmtEGP(amountPiasters)} — سُجّلت الدفعة وخصمت من المديونية دون خصم من البنك.`;
+    await updateDoc(doc(db, 'bankAccounts', bank.id), { balancePiasters: next, updatedAt: serverTimestamp() });
+    return '';
+  } catch (e) {
+    return 'تعذّر تحديث الصندوق/البنك: ' + firestoreErrorMessage(e) + ' — الدفعة نفسها سُجّلت وخصمت من المديونية.';
+  }
+}
+
+// --- تحميل بيانات المديونيات: جهات + فواتير منشورة + دفعات ---
+async function loadDebtsData(kind) {
+  const isCust = kind === 'customers';
+  const [contacts, invoices, payments] = await Promise.all([
+    loadCollection(kind),
+    loadCollection(isCust ? 'salesInvoices' : 'purchaseInvoices'),
+    loadCollection(isCust ? 'salesPayments' : 'purchasePayments')
+  ]);
+  const payByInv = {};
+  payments.forEach((p) => {
+    const k = isCust ? p.salesInvoiceId : p.purchaseInvoiceId;
+    if (k) payByInv[k] = (payByInv[k] || 0) + Number(p.amountPiasters || 0);
+  });
+  const posted = invoices.filter((i) => i.status === 'posted');
+  const open = posted
+    .map((inv) => ({ inv, remaining: remainingOf(inv, payByInv), paid: paidOf(inv, payByInv) }))
+    .filter((x) => x.remaining > 0);
+  const byContact = {};
+  open.forEach((x) => {
+    const cid = isCust ? x.inv.customerId : x.inv.supplierId;
+    if (!cid) return;
+    (byContact[cid] = byContact[cid] || []).push(x);
+  });
+  return { isCust, contacts, posted, payments, payByInv, open, byContact };
+}
+
+// --- قائمة المديونيات ---
+async function renderDebts(kind, selectedId = null) {
+  if (selectedId) return renderDebtDetail(kind, selectedId);
+  const { isCust, contacts, open, byContact } = await loadDebtsData(kind);
+  const title = isCust ? '💳 مديونيات العملاء' : '🧾 مديونيات الموردين';
+  const who = isCust ? 'عميل' : 'مورد';
+  const totalDebt = open.reduce((a, x) => a + x.remaining, 0);
+  const rows = contacts
+    .map((c) => {
+      const list = byContact[c.id] || [];
+      const debt = list.reduce((a, x) => a + x.remaining, 0);
+      const stored = Number(c.currentBalancePiasters || 0);
+      return { c, list, debt: list.length ? debt : stored, openingOnly: !list.length && stored > 0 };
+    })
+    .filter((r) => r.debt > 0)
+    .sort((a, b) => b.debt - a.debt);
+  $('page').innerHTML = `
+    <h2 class="page-title">${title}</h2>
+    <p class="page-sub">كل ${who} ورصيده المدين من الفواتير المفتوحة — المتبقي = الإجمالي − المدفوع عند الإنشاء − مجموع الدفعات المسجلة. اضغط على أي ${who} لعرض فواتيره ودفعاته وتسديد جزء.</p>
+    <div class="kpi-grid">
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(totalDebt)}<span class="unit">ج.م</span></div><div class="label">إجمالي المديونيات المفتوحة</div></div><div class="ico">💳</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(open.length)}</div><div class="label">فاتورة مفتوحة</div></div><div class="ico">🧾</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(rows.length)}</div><div class="label">${who} عليه مديونية</div></div><div class="ico">👥</div></div>
+    </div>
+    <div class="card"><h3>${title}</h3>
+    ${rows.length ? `<table><tr><th>${who}</th><th>الهاتف</th><th>فواتير مفتوحة</th><th>أقرب استحقاق</th><th>المديونية</th><th></th></tr>
+      ${rows.map(({ c, list, debt, openingOnly }) => {
+        const nearest = list.length ? new Date(Math.min(...list.map((x) => dueDateOf(x.inv).getTime()))) : null;
+        return `<tr><td>${esc(c.name_ar)}${demoBadge(c)}${openingOnly ? ' <span class="badge">رصيد افتتاحي</span>' : ''}</td>
+        <td dir="ltr">${esc(c.phone || '')}</td><td class="num">${list.length || '—'}</td>
+        <td>${nearest ? nearest.toLocaleDateString('ar-EG') : '—'}</td>
+        <td class="num">${fmtEGP(debt)}</td>
+        <td><button class="btn small" data-debt-open="${c.id}">التفاصيل والدفعات</button></td></tr>`;
+      }).join('')}</table>`
+    : emptyState('لا توجد مديونيات مفتوحة حالياً — كل الفواتير مسددة بالكامل.')}</div>`;
+  document.querySelectorAll('[data-debt-open]').forEach((b) =>
+    b.addEventListener('click', () => renderDebts(kind, b.dataset.debtOpen)));
+}
+
+// --- تفاصيل مديونية جهة: فواتير مفتوحة + سجل دفعات + تسديد جزء ---
+async function renderDebtDetail(kind, contactId) {
+  const { isCust, contacts, payments, payByInv, byContact, posted } = await loadDebtsData(kind);
+  const c = contacts.find((x) => x.id === contactId);
+  if (!c) { $('page').innerHTML = emptyState('تعذّر العثور على هذه الجهة.'); return; }
+  const list = byContact[contactId] || [];
+  const debt = list.reduce((a, x) => a + x.remaining, 0);
+  const myPayments = payments
+    .filter((p) => (isCust ? p.customerId : p.supplierId) === contactId)
+    .sort((a, b) => tsToDate(b.date || b.createdAt) - tsToDate(a.date || a.createdAt));
+  const invById = {};
+  posted.forEach((inv) => { invById[inv.id] = inv; });
+  const title = isCust ? '💳 مديونية عميل' : '🧾 مديونية مورد';
+  $('page').innerHTML = `
+    <h2 class="page-title">${title}: ${esc(c.name_ar)}</h2>
+    <p class="page-sub"><button class="btn small secondary" id="back-debts">← عودة للمديونيات</button></p>
+    <div class="kpi-grid">
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(debt)}<span class="unit">ج.م</span></div><div class="label">المديونية المفتوحة</div></div><div class="ico">💳</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(list.length)}</div><div class="label">فاتورة مفتوحة</div></div><div class="ico">🧾</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(myPayments.reduce((a, p) => a + Number(p.amountPiasters || 0), 0))}<span class="unit">ج.م</span></div><div class="label">إجمالي الدفعات المسجلة</div></div><div class="ico">💰</div></div>
+    </div>
+    <div class="toolbar"><button class="btn small" id="print-statement-btn">🖨️ طباعة كشف الحساب</button></div>
+    <div class="card"><h3>الفواتير المفتوحة</h3>
+    ${list.length ? `<table><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th></th></tr>
+      ${list.sort((a, b) => dueDateOf(a.inv) - dueDateOf(b.inv)).map(({ inv, remaining, paid }) => {
+        const st = payStatusOf(Number(inv.totalPiasters || 0), paid);
+        return `<tr><td dir="ltr">${esc(inv.invoiceNumber || inv.id)}${demoBadge(inv)}</td>
+        <td>${tsToDate(inv.date || inv.createdAt).toLocaleDateString('ar-EG')}</td>
+        <td>${dueDateOf(inv).toLocaleDateString('ar-EG')}</td>
+        <td class="num">${fmtEGP(inv.totalPiasters)}</td><td class="num">${fmtEGP(paid)}</td>
+        <td class="num">${fmtEGP(remaining)}</td>
+        <td><span class="badge ${payStatusBadgeCls(st)}">${payStatusLabel(st)}</span></td>
+        <td style="white-space:nowrap">
+          <button class="btn small" data-pay-inv="${inv.id}" data-pay-max="${remaining}">💰 تسديد جزء</button>
+          <button class="btn small secondary" data-view-inv="${inv.id}">عرض / طباعة</button>
+        </td></tr>`;
+      }).join('')}</table>`
+    : emptyState('لا توجد فواتير مفتوحة لهذه الجهة — المديونية مسددة بالكامل.')}
+    <div id="pay-form-area"></div></div>
+    <div class="card" style="margin-top:14px"><h3>سجل الدفعات</h3>
+    ${myPayments.length ? `<table><tr><th>التاريخ</th><th>الفاتورة</th><th>طريقة الدفع</th><th>المبلغ</th><th>ملاحظات</th></tr>
+      ${myPayments.map((p) => {
+        const invId = isCust ? p.salesInvoiceId : p.purchaseInvoiceId;
+        const inv = invId ? invById[invId] : null;
+        return `<tr><td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td>
+        <td dir="ltr">${inv ? esc(inv.invoiceNumber || inv.id) : 'على الحساب'}</td>
+        <td>${payMethodLabel(p.paymentMethod)}</td><td class="num">${fmtEGP(p.amountPiasters)}</td>
+        <td>${esc(p.notes || '')}</td></tr>`;
+      }).join('')}</table>`
+    : emptyState('لا توجد دفعات مسجلة بعد لهذه الجهة.')}</div>`;
+  $('back-debts').addEventListener('click', () => renderDebts(kind));
+  $('print-statement-btn').addEventListener('click', () => printStatement(kind, c, list, myPayments, invById));
+  document.querySelectorAll('[data-pay-inv]').forEach((b) => b.addEventListener('click', () => {
+    const inv = list.find((x) => x.inv.id === b.dataset.payInv);
+    if (inv) openPayForm(kind, c, inv.inv, Number(b.dataset.payMax), () => renderDebtDetail(kind, contactId));
+  }));
+  document.querySelectorAll('[data-view-inv]').forEach((b) => b.addEventListener('click', () =>
+    renderInvoiceDetail(isCust ? 'sales' : 'purchase', b.dataset.viewInv)));
+}
+
+// --- نموذج تسديد جزء (داخلي — يظهر داخل صفحة التفاصيل) ---
+function openPayForm(kind, contact, inv, maxRemaining, onDone) {
+  const area = $('pay-form-area');
+  if (!area) return;
+  const isCust = kind === 'customers';
+  const today = dateInputVal(new Date());
+  area.innerHTML = `
+    <div class="pay-form card" style="margin-top:14px;border-color:rgba(240,180,41,.5)">
+      <h3>💰 تسديد جزء — فاتورة ${esc(inv.invoiceNumber || inv.id)}</h3>
+      <p class="note" style="text-align:right">المتبقي على هذه الفاتورة: <b>${fmtEGP(maxRemaining)}</b> — المبلغ يجب أن يكون أكبر من صفر ولا يتجاوز المتبقي.</p>
+      <div class="form-grid">
+        <div><label>المبلغ (جنيه) *</label><input id="pay-amount" type="number" step="0.01" min="0.01" max="${(maxRemaining / 100).toFixed(2)}" placeholder="مثال: 500"></div>
+        <div><label>تاريخ الدفعة *</label><input id="pay-date" type="date" value="${today}"></div>
+        <div><label>طريقة التسديد *</label><select id="pay-method">${PAY_METHODS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
+        <div><label>ملاحظات</label><input id="pay-notes" placeholder="اختياري"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn" id="pay-submit" style="width:auto">✅ تسجيل الدفعة</button>
+        <button class="btn secondary" id="pay-cancel" style="width:auto" type="button">إلغاء</button>
+      </div>
+      <div class="error" id="pay-error"></div>
+      <p class="note">الدفعة تُسجَّل فوراً وتخصم من رصيد المديونية. الدفع النقدي يضاف للصندوق (تحصيل) أو يُخصم منه (دفع لمورد)، والتحويل البنكي/الفيزا/إنستاباي يؤثر على الحساب البنكي، وفودافون كاش والشيك لا يؤثران على الصندوق.</p>
+    </div>`;
+  $('pay-cancel').addEventListener('click', () => { area.innerHTML = ''; });
+  $('pay-submit').addEventListener('click', async () => {
+    hideError($('pay-error'));
+    const amount = toPiasters($('pay-amount').value);
+    const dateTs = parseDateInput($('pay-date').value) || Timestamp.fromDate(new Date());
+    const method = $('pay-method').value;
+    const notes = $('pay-notes').value.trim();
+    if (!amount || amount <= 0) { showError($('pay-error'), 'أدخل مبلغاً أكبر من صفر.'); return; }
+    if (amount > maxRemaining) { showError($('pay-error'), `المبلغ يتجاوز المتبقي على الفاتورة (${fmtEGP(maxRemaining)}).`); return; }
+    $('pay-submit').disabled = true; $('pay-submit').textContent = 'جارٍ الحفظ...';
+    try {
+      await recordPayment(kind, contact.id, inv, amount, dateTs, method, notes);
+      area.innerHTML = '';
+      alert(`تم تسجيل دفعة ${fmtEGP(amount)} (${payMethodLabel(method)}) — المتبقي الآن ${fmtEGP(maxRemaining - amount)}.`);
+      await onDone();
+    } catch (err) {
+      showError($('pay-error'), firestoreErrorMessage(err));
+      $('pay-submit').disabled = false; $('pay-submit').textContent = '✅ تسجيل الدفعة';
+    }
+  });
+}
+
+// --- تسجيل دفعة: مستند دفعة + تحديث رصيد الجهة (ذرياً) + أثر الصندوق/البنك ---
+async function recordPayment(kind, contactId, inv, amountPiasters, dateTs, method, notes) {
+  const isCust = kind === 'customers';
+  const coll = isCust ? 'salesPayments' : 'purchasePayments';
+  const contactRef = doc(db, kind, contactId);
+  const snap = await getDoc(contactRef);
+  const batch = writeBatch(db);
+  const payRef = doc(collection(db, coll));
+  const payData = {
+    orgId, branchId: (inv && inv.branchId) || DEFAULT_BRANCH,
+    amountPiasters, paymentMethod: method, date: dateTs, notes: notes || '',
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+  };
+  if (isCust) { payData.customerId = contactId; payData.salesInvoiceId = inv ? inv.id : null; payData.receivedBy = me.uid; }
+  else { payData.supplierId = contactId; payData.purchaseInvoiceId = inv ? inv.id : null; payData.paidBy = me.uid; }
+  batch.set(payRef, payData);
+  if (snap.exists()) {
+    const cur = Number(snap.data().currentBalancePiasters || 0);
+    batch.update(contactRef, { currentBalancePiasters: Math.max(0, cur - amountPiasters), updatedAt: serverTimestamp() });
+  }
+  await batch.commit();
+  const cashNote = await applyCashMovement(method, amountPiasters, isCust ? 1 : -1);
+  if (cashNote) alert(cashNote);
+}
+
+// ============================================================================
+// إنشاء فاتورة مباشرة (بدون سلة) — اختيار المنتج يضيفه للفاتورة فوراً
+// ============================================================================
+let invForm = null;       // { kind, lines: [{product, qty, unitPrice}], contactId }
+// invoiceScanTarget معلنة أعلى الملف بجانب متغيرات المسح
+
+function invFormTotals() {
+  if (!invForm) return { subtotal: 0, total: 0, paid: 0, remaining: 0 };
+  const subtotal = invForm.lines.reduce((a, l) => a + l.qty * l.unitPrice, 0);
+  const discount = toPiasters($('inv-discount') ? $('inv-discount').value : 0);
+  const tax = toPiasters($('inv-tax') ? $('inv-tax').value : 0);
+  const total = Math.max(0, subtotal - discount + tax);
+  let paid = 0;
+  const status = document.querySelector('input[name="inv-pay-status"]:checked');
+  if (status && status.value === 'paid') paid = total;
+  else if (status && status.value === 'partial') paid = Math.min(total, toPiasters($('inv-paid-amount') ? $('inv-paid-amount').value : 0));
+  return { subtotal, discount, tax, total, paid, remaining: total - paid };
+}
+function updateInvTotals() {
+  const t = invFormTotals();
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  set('inv-subtotal', fmtEGP(t.subtotal));
+  set('inv-total', fmtEGP(t.total));
+  set('inv-paid-show', fmtEGP(t.paid));
+  set('inv-remaining', fmtEGP(t.remaining));
+}
+function drawInvLines() {
+  const wrap = $('inv-lines');
+  if (!wrap || !invForm) return;
+  wrap.innerHTML = invForm.lines.length ? `<table><tr><th>المنتج</th><th>رقم القطعة</th><th>الكمية</th><th>سعر الوحدة (جنيه)</th><th>الإجمالي</th><th></th></tr>
+    ${invForm.lines.map((l, i) => `<tr>
+      <td>${esc(l.product.name_ar)}${demoBadge(l.product)}</td><td dir="ltr">${esc(l.product.partNumber || '—')}</td>
+      <td><input type="number" min="1" step="1" value="${l.qty}" data-line-qty="${i}" style="width:80px"></td>
+      <td><input type="number" min="0" step="0.01" value="${(l.unitPrice / 100).toFixed(2)}" data-line-price="${i}" style="width:100px"></td>
+      <td class="num" data-line-total="${i}">${fmtEGP(l.qty * l.unitPrice)}</td>
+      <td><button class="btn small secondary" data-line-del="${i}">✕</button></td></tr>`).join('')}</table>`
+    : emptyState('لم تضف أي منتج بعد — ابحث بالاسم أو رقم القطعة أو الباركود، أو امسح بالكاميرا، وسيُضاف المنتج للفاتورة مباشرة.');
+  wrap.querySelectorAll('[data-line-qty]').forEach((inp) => inp.addEventListener('input', () => {
+    const l = invForm.lines[Number(inp.dataset.lineQty)];
+    l.qty = Math.max(1, Math.floor(Number(inp.value) || 1));
+    const stock = productStock(l.product);
+    if (invForm.kind === 'sales' && stock !== null && l.qty > stock) {
+      alert(`المخزون المتاح ${stock} قطعة فقط من ${l.product.name_ar}.`);
+      l.qty = stock; inp.value = stock;
+    }
+    const totalEl = wrap.querySelector(`[data-line-total="${inp.dataset.lineQty}"]`);
+    if (totalEl) totalEl.textContent = fmtEGP(l.qty * l.unitPrice);
+    updateInvTotals();
+  }));
+  wrap.querySelectorAll('[data-line-price]').forEach((inp) => inp.addEventListener('input', () => {
+    const l = invForm.lines[Number(inp.dataset.linePrice)];
+    l.unitPrice = Math.max(0, toPiasters(inp.value));
+    const totalEl = wrap.querySelector(`[data-line-total="${inp.dataset.linePrice}"]`);
+    if (totalEl) totalEl.textContent = fmtEGP(l.qty * l.unitPrice);
+    updateInvTotals();
+  }));
+  wrap.querySelectorAll('[data-line-del]').forEach((b) => b.addEventListener('click', () => {
+    invForm.lines.splice(Number(b.dataset.lineDel), 1); drawInvLines(); updateInvTotals();
+  }));
+}
+function addInvLine(product) {
+  if (!invForm) return;
+  const stock = productStock(product);
+  if (invForm.kind === 'sales' && stock !== null && stock <= 0) { alert(`المنتج ${product.name_ar} نافد من المخزون.`); return; }
+  const existing = invForm.lines.find((l) => l.product.id === product.id);
+  if (existing) {
+    if (invForm.kind === 'sales' && stock !== null && existing.qty + 1 > stock) { alert(`المخزون المتاح ${stock} قطعة فقط من ${product.name_ar}.`); return; }
+    existing.qty += 1;
+  } else {
+    invForm.lines.push({
+      product,
+      qty: 1,
+      unitPrice: Number(invForm.kind === 'purchase' ? (product.purchasePricePiasters || 0) : (product.sellingPricePiasters || 0))
+    });
+  }
+  drawInvLines(); updateInvTotals();
+}
+
+async function renderInvoiceForm(kind) {
+  const isSales = kind === 'sales';
+  if (!canCreateInvoice(kind)) {
+    $('page').innerHTML = emptyState('دورك الحالي لا يسمح بإنشاء فواتير ' + (isSales ? 'مبيعات' : 'شراء') + '.');
+    return;
+  }
+  await loadProducts();
+  const contacts = await loadCollection(isSales ? 'customers' : 'suppliers');
+  const activeContacts = contacts.filter((c) => c.isActive !== false);
+  invForm = { kind, lines: [], contactId: '' };
+  const today = dateInputVal(new Date());
+  const due = dateInputVal(new Date(Date.now() + 30 * 24 * 3600 * 1000));
+  $('page').innerHTML = `
+    <h2 class="page-title">🧾 ${isSales ? 'إنشاء فاتورة مبيعات' : 'إنشاء فاتورة شراء'}</h2>
+    <p class="page-sub">اختر المنتج بالبحث أو المسح فيُضاف للفاتورة مباشرة — لا توجد سلة في هذا المسار. الكمية والسعر يتعدلان في نفس السطر. نقطة البيع (POS) تبقى كما هي لمن يفضّل السلة.</p>
+    <p><button class="btn small secondary" id="inv-back">← عودة إلى ${isSales ? 'نقطة البيع' : 'المشتريات'}</button></p>
+    <div class="card"><h3>بيانات الفاتورة</h3>
+      <div class="form-grid">
+        <div><label>${isSales ? 'العميل' : 'المورد'} ${isSales ? '' : '*'}</label>
+          <select id="inv-contact"><option value="">${isSales ? 'عميل نقدي (بدون حساب)' : '— اختر المورد —'}</option>
+          ${activeContacts.map((c) => `<option value="${c.id}">${esc(c.name_ar)} — ${esc(c.phone || '')}</option>`).join('')}</select></div>
+        <div><label>الفرع</label><select id="inv-branch">
+          ${branches.map((b) => `<option value="${b.id}" ${b.id === DEFAULT_BRANCH ? 'selected' : ''}>${esc(b.name_ar)}</option>`).join('') || `<option value="${DEFAULT_BRANCH}">الفرع الرئيسي</option>`}</select></div>
+        <div><label>تاريخ الفاتورة *</label><input id="inv-date" type="date" value="${today}"></div>
+        <div><label>تاريخ الاستحقاق</label><input id="inv-due" type="date" value="${due}"></div>
+      </div>
+      <div class="form-grid" style="margin-top:10px">
+        <div><label>اسم جديد (سريع)</label><input id="inv-new-name" placeholder="اسم ${isSales ? 'عميل' : 'مورد'} جديد"></div>
+        <div><label>هاتف الجديد</label><input id="inv-new-phone" dir="ltr" placeholder="01xxxxxxxxx"></div>
+        <div style="align-self:end"><button class="btn small" id="inv-new-contact" type="button">➕ إضافة واختياره</button></div>
+      </div>
+      <div class="form-grid" style="margin-top:10px">
+        <div><label>الخصم (جنيه)</label><input id="inv-discount" type="number" step="0.01" min="0" value="0"></div>
+        <div><label>الضريبة (جنيه)</label><input id="inv-tax" type="number" step="0.01" min="0" value="0"></div>
+        <div><label>ملاحظات</label><input id="inv-notes" placeholder="اختياري"></div>
+      </div>
+      <div style="margin-top:12px"><label>حالة السداد عند الإنشاء</label>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px">
+          <label style="display:inline-flex;gap:6px;align-items:center"><input type="radio" name="inv-pay-status" value="paid" style="width:auto"> مدفوع بالكامل</label>
+          <label style="display:inline-flex;gap:6px;align-items:center"><input type="radio" name="inv-pay-status" value="partial" style="width:auto"> جزئي (دفعة أولى)</label>
+          <label style="display:inline-flex;gap:6px;align-items:center"><input type="radio" name="inv-pay-status" value="credit" checked style="width:auto"> آجل (دين كامل)</label>
+        </div></div>
+      <div class="form-grid" style="margin-top:10px">
+        <div><label>المبلغ المدفوع الآن (جنيه)</label><input id="inv-paid-amount" type="number" step="0.01" min="0" value="0"></div>
+        <div><label>طريقة الدفع الآن</label><select id="inv-pay-method">${PAY_METHODS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
+      </div>
+    </div>
+    <div class="card"><h3>🔍 إضافة منتج للفاتورة</h3>
+      <div class="toolbar">
+        <input id="inv-search" type="search" placeholder="ابحث بالاسم، رقم القطعة، الباركود، أو QR...">
+        <button class="btn scan small" id="inv-scan-btn" type="button">📷 مسح بالكاميرا</button>
+      </div>
+      <div id="inv-search-results"></div>
+      <div id="inv-lines" style="margin-top:12px"></div>
+      <div class="cart-total"><span>الإجمالي الفرعي</span><span id="inv-subtotal">0.00 ج.م</span></div>
+      <div class="list-row"><span>الإجمالي بعد الخصم والضريبة</span><b id="inv-total">0.00 ج.م</b></div>
+      <div class="list-row"><span>المدفوع الآن</span><b id="inv-paid-show">0.00 ج.م</b></div>
+      <div class="list-row"><span>المتبقي (مديونية)</span><b id="inv-remaining">0.00 ج.م</b></div>
+      <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+        <button class="btn" id="inv-save" style="width:auto">✅ حفظ الفاتورة</button>
+        <button class="btn secondary" id="inv-cancel" style="width:auto" type="button">إلغاء</button>
+      </div>
+      <div class="error" id="inv-error"></div>
+      <p class="note">رقم الفاتورة يُولَّد تلقائياً. الفاتورة المنشورة لا تُحذف ولا تُعدَّل — الإلغاء يكون بعكسها فقط. المخزون يتحرك مع حفظ الفاتورة (خروج للبيع / دخول للشراء).</p>
+    </div>`;
+  const refreshPayInputs = () => {
+    const st = document.querySelector('input[name="inv-pay-status"]:checked');
+    const paidInput = $('inv-paid-amount');
+    paidInput.disabled = !st || st.value !== 'partial';
+    if (st && st.value === 'credit') paidInput.value = 0;
+    updateInvTotals();
+  };
+  document.querySelectorAll('input[name="inv-pay-status"]').forEach((r) => r.addEventListener('change', refreshPayInputs));
+  ['inv-discount', 'inv-tax', 'inv-paid-amount'].forEach((id) => $(id).addEventListener('input', updateInvTotals));
+  $('inv-back').addEventListener('click', () => go(isSales ? 'sales' : 'purchases'));
+  $('inv-cancel').addEventListener('click', () => go(isSales ? 'sales' : 'purchases'));
+  $('inv-new-contact').addEventListener('click', async () => {
+    const name = $('inv-new-name').value.trim();
+    const phone = $('inv-new-phone').value.trim();
+    if (!name || !phone) { alert('أدخل اسم وهاتف الجهة الجديدة.'); return; }
+    try {
+      const ref = await addDoc(collection(db, isSales ? 'customers' : 'suppliers'), {
+        orgId, branchId: DEFAULT_BRANCH, name_ar: name, name_en: '', phone, email: '', address_ar: '',
+        openingBalancePiasters: 0, currentBalancePiasters: 0, creditLimitPiasters: 0,
+        isActive: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+      });
+      const sel = $('inv-contact');
+      sel.innerHTML += `<option value="${ref.id}" selected>${esc(name)} — ${esc(phone)}</option>`;
+      sel.value = ref.id;
+      $('inv-new-name').value = ''; $('inv-new-phone').value = '';
+    } catch (err) { alert(firestoreErrorMessage(err)); }
+  });
+  $('inv-search').addEventListener('input', async (e) => {
+    const q = e.target.value;
+    const box = $('inv-search-results');
+    if (!q.trim()) { box.innerHTML = ''; return; }
+    const list = (await searchProducts(q)).filter((p) => p.isActive !== false).slice(0, 8);
+    box.innerHTML = list.length ? list.map((p) => `
+      <div class="list-row" style="cursor:pointer" data-inv-pick="${p.id}">
+        <span>${esc(p.name_ar)} <small dir="ltr" style="color:var(--muted)">${esc(p.partNumber || '')}</small></span>
+        <b>${fmtEGP(isSales ? p.sellingPricePiasters : p.purchasePricePiasters)} — متاح: ${productStock(p) ?? '—'}</b>
+      </div>`).join('') : emptyState('لا توجد نتائج مطابقة.');
+    box.querySelectorAll('[data-inv-pick]').forEach((el) => el.addEventListener('click', () => {
+      addInvLine(productsCache.find((p) => p.id === el.dataset.invPick));
+      $('inv-search').value = ''; box.innerHTML = '';
+    }));
+  });
+  $('inv-scan-btn').addEventListener('click', () => {
+    invoiceScanTarget = (p) => { if (p.isActive === false) { alert('هذا المنتج موقوف.'); return; } addInvLine(p); };
+    openScanner();
+  });
+  $('inv-save').addEventListener('click', saveInvoiceForm);
+  drawInvLines(); refreshPayInputs();
+}
+
+async function saveInvoiceForm() {
+  if (!invForm) return;
+  hideError($('inv-error'));
+  const isSales = invForm.kind === 'sales';
+  const contactId = $('inv-contact').value || null;
+  const branchId = $('inv-branch').value || DEFAULT_BRANCH;
+  const dateTs = parseDateInput($('inv-date').value) || Timestamp.fromDate(new Date());
+  const dueTs = parseDateInput($('inv-due').value) || Timestamp.fromDate(new Date(Date.now() + 30 * 24 * 3600 * 1000));
+  const notes = $('inv-notes').value.trim();
+  const t = invFormTotals();
+  const payStatus = document.querySelector('input[name="inv-pay-status"]:checked');
+  const payMethod = $('inv-pay-method').value;
+  if (!invForm.lines.length) { showError($('inv-error'), 'أضف منتجاً واحداً على الأقل للفاتورة.'); return; }
+  if (!isSales && !contactId) { showError($('inv-error'), 'اختر المورد أولاً.'); return; }
+  if (isSales && payStatus.value !== 'paid' && !contactId) { showError($('inv-error'), 'الفاتورة الآجلة أو الجزئية تحتاج عميلاً مسجلاً — اختر عميلاً أو أضف عميلاً جديداً.'); return; }
+  if (t.total <= 0) { showError($('inv-error'), 'إجمالي الفاتورة يجب أن يكون أكبر من صفر.'); return; }
+  for (const l of invForm.lines) {
+    if (!l.qty || l.qty <= 0) { showError($('inv-error'), 'كمية كل صنف يجب أن تكون أكبر من صفر.'); return; }
+    if (isSales) {
+      const stock = productStock(l.product);
+      if (stock !== null && l.qty > stock) { showError($('inv-error'), `المخزون المتاح ${stock} قطعة فقط من ${l.product.name_ar}.`); return; }
+    }
+  }
+  const prefix = isSales ? 'SI' : 'PI';
+  const invoiceNumber = `${prefix}-` + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(Date.now()).slice(-6);
+  const btn = $('inv-save');
+  btn.disabled = true; btn.textContent = 'جارٍ الحفظ...';
+  try {
+    const batch = writeBatch(db);
+    const invRef = doc(collection(db, isSales ? 'salesInvoices' : 'purchaseInvoices'));
+    const base = {
+      orgId, branchId, invoiceNumber, idempotencyKey: invRef.id,
+      createdBy: me.uid, status: 'posted', date: dateTs, dueDate: dueTs,
+      subtotalPiasters: t.subtotal, discountPiasters: t.discount, taxPiasters: t.tax,
+      totalPiasters: t.total, paidPiasters: t.paid, remainingPiasters: t.remaining,
+      paymentMethod: t.paid >= t.total ? payMethod : t.paid > 0 ? 'mixed' : 'credit',
+      notes, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    };
+    if (isSales) {
+      batch.set(invRef, { ...base, customerId: contactId });
+      invForm.lines.forEach((l) => {
+        const itemRef = doc(collection(db, 'salesInvoices', invRef.id, 'items'));
+        batch.set(itemRef, {
+          orgId, productId: l.product.id, productName_ar: l.product.name_ar,
+          partNumber: l.product.partNumber || '', quantity: l.qty,
+          unitPricePiasters: l.unitPrice, discountPiasters: 0,
+          lineTotalPiasters: l.qty * l.unitPrice,
+          costPricePiasters: Number(l.product.purchasePricePiasters || 0)
+        });
+        const movRef = doc(collection(db, 'stockMovements'));
+        batch.set(movRef, {
+          orgId, branchId, warehouseId: (warehouses[0] || {}).id || '',
+          productId: l.product.id, type: 'sale_out', quantity: l.qty,
+          referenceType: 'salesInvoice', referenceId: invRef.id, createdBy: me.uid,
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+        });
+      });
+    } else {
+      batch.set(invRef, {
+        ...base, supplierId: contactId, supplierInvoiceNumber: '',
+        shippingPiasters: 0, extraExpensesPiasters: 0,
+        items: invForm.lines.map((l) => ({
+          productId: l.product.id, productName_ar: l.product.name_ar, partNumber: l.product.partNumber || '',
+          quantity: l.qty, unitPricePiasters: l.unitPrice, lineTotalPiasters: l.qty * l.unitPrice,
+          costPricePiasters: Number(l.product.purchasePricePiasters || 0)
+        }))
+      });
+      invForm.lines.forEach((l) => {
+        const movRef = doc(collection(db, 'stockMovements'));
+        batch.set(movRef, {
+          orgId, branchId, warehouseId: (warehouses[0] || {}).id || '',
+          productId: l.product.id, type: 'purchase_in', quantity: l.qty,
+          referenceType: 'purchaseInvoice', referenceId: invRef.id, createdBy: me.uid,
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+        });
+      });
+    }
+    // رصيد الجهة يزيد بالمتبقي (مديونية جديدة) — ذرياً مع الفاتورة
+    if (contactId && t.remaining > 0) {
+      const coll = isSales ? 'customers' : 'suppliers';
+      const snap = await getDoc(doc(db, coll, contactId));
+      if (snap.exists()) {
+        const cur = Number(snap.data().currentBalancePiasters || 0);
+        batch.update(doc(db, coll, contactId), { currentBalancePiasters: cur + t.remaining, updatedAt: serverTimestamp() });
+      }
+    }
+    await batch.commit();
+    // أثر المدفوع الآن على الصندوق/البنك (أفضل جهد — لا يفشل الحفظ)
+    if (t.paid > 0) {
+      const cashNote = await applyCashMovement(payMethod, t.paid, isSales ? 1 : -1);
+      if (cashNote) alert(cashNote);
+    }
+    await loadProducts();
+    alert(`تم حفظ الفاتورة ${invoiceNumber} في Firestore.`);
+    invForm = null;
+    await renderInvoiceDetail(isSales ? 'sales' : 'purchase', invRef.id);
+  } catch (err) {
+    showError($('inv-error'), firestoreErrorMessage(err));
+    btn.disabled = false; btn.textContent = '✅ حفظ الفاتورة';
+  }
+}
+
+// ============================================================================
+// عرض فاتورة + طباعتها (A4)
+// ============================================================================
+async function loadInvoiceDetail(kind, invoiceId) {
+  const isSales = kind === 'sales';
+  const invSnap = await getDoc(doc(db, isSales ? 'salesInvoices' : 'purchaseInvoices', invoiceId));
+  if (!invSnap.exists()) return null;
+  const inv = { id: invSnap.id, ...invSnap.data() };
+  let items = [];
+  if (isSales) {
+    const snap = await getDocs(collection(db, 'salesInvoices', invoiceId, 'items'));
+    items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } else {
+    items = (inv.items || []).map((it, i) => ({ id: 'it_' + i, ...it }));
+  }
+  const contactId = isSales ? inv.customerId : inv.supplierId;
+  let contact = null;
+  if (contactId) {
+    const cs = await getDoc(doc(db, isSales ? 'customers' : 'suppliers', contactId));
+    if (cs.exists()) contact = { id: cs.id, ...cs.data() };
+  }
+  const payments = (await loadCollection(isSales ? 'salesPayments' : 'purchasePayments'))
+    .filter((p) => (isSales ? p.salesInvoiceId : p.purchaseInvoiceId) === invoiceId)
+    .sort((a, b) => tsToDate(a.date || a.createdAt) - tsToDate(b.date || b.createdAt));
+  const payByInv = { [invoiceId]: payments.reduce((a, p) => a + Number(p.amountPiasters || 0), 0) };
+  return { inv, items, contact, payments, remaining: remainingOf(inv, payByInv), paid: paidOf(inv, payByInv) };
+}
+
+function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
+  const isSales = kind === 'sales';
+  const st = payStatusOf(Number(inv.totalPiasters || 0), paid);
+  const whoLabel = isSales ? 'العميل' : 'المورد';
+  return `
+  <div class="inv-sheet" dir="rtl">
+    <div class="inv-head">
+      <div class="inv-brand">
+        <div class="inv-logo">الفلكي <span>لقطع غيار السيارات</span></div>
+        <div class="inv-brand-en" dir="ltr">Al-Falaky Auto Spare Parts</div>
+      </div>
+      <div class="inv-title">${isSales ? 'فاتورة مبيعات' : 'فاتورة مشتريات'}</div>
+    </div>
+    <div class="inv-meta">
+      <div><span>رقم الفاتورة:</span> <b dir="ltr">${esc(inv.invoiceNumber || inv.id)}</b></div>
+      <div><span>التاريخ:</span> <b>${tsToDate(inv.date || inv.createdAt).toLocaleDateString('ar-EG')}</b></div>
+      <div><span>الاستحقاق:</span> <b>${dueDateOf(inv).toLocaleDateString('ar-EG')}</b></div>
+      <div><span>الفرع:</span> <b>${esc(branchName(inv.branchId))}</b></div>
+      <div><span>حالة السداد:</span> <b><span class="badge ${payStatusBadgeCls(st)}">${payStatusLabel(st)}</span></b></div>
+    </div>
+    <div class="inv-contact">
+      <div><span>${whoLabel}:</span> <b>${esc(contact ? contact.name_ar : (isSales ? 'عميل نقدي' : '—'))}</b></div>
+      <div><span>الهاتف:</span> <b dir="ltr">${esc(contact ? (contact.phone || '—') : '—')}</b></div>
+      <div><span>العنوان:</span> <b>${esc(contact ? (contact.address_ar || '—') : '—')}</b></div>
+    </div>
+    <table class="inv-table">
+      <tr><th>#</th><th>الصنف</th><th>رقم القطعة</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr>
+      ${items.map((it, i) => `<tr>
+        <td>${i + 1}</td><td>${esc(it.productName_ar || it.productName || '—')}</td>
+        <td dir="ltr">${esc(it.partNumber || '—')}</td>
+        <td class="num">${fmtNum(it.quantity)}</td>
+        <td class="num">${fmtEGP(it.unitPricePiasters)}</td>
+        <td class="num">${fmtEGP(it.lineTotalPiasters)}</td></tr>`).join('')}
+    </table>
+    <div class="inv-totals">
+      <div><span>الإجمالي الفرعي:</span> <b>${fmtEGP(inv.subtotalPiasters)}</b></div>
+      ${Number(inv.discountPiasters || 0) ? `<div><span>الخصم:</span> <b>− ${fmtEGP(inv.discountPiasters)}</b></div>` : ''}
+      ${Number(inv.taxPiasters || 0) ? `<div><span>الضريبة:</span> <b>+ ${fmtEGP(inv.taxPiasters)}</b></div>` : ''}
+      <div class="grand"><span>الإجمالي العام:</span> <b>${fmtEGP(inv.totalPiasters)}</b></div>
+      <div><span>المدفوع:</span> <b>${fmtEGP(paid)}</b></div>
+      <div class="remain"><span>المتبقي:</span> <b>${fmtEGP(remaining)}</b></div>
+    </div>
+    ${inv.notes ? `<div class="inv-notes">ملاحظات: ${esc(inv.notes)}</div>` : ''}
+    <div class="inv-foot">
+      <div>شكراً لتعاملكم مع الفلكي لقطع غيار السيارات</div>
+      <div class="inv-sign"><span>توقيع المستلم: ....................</span><span>توقيع البائع: ....................</span></div>
+    </div>
+  </div>`;
+}
+
+async function renderInvoiceDetail(kind, invoiceId) {
+  const isSales = kind === 'sales';
+  const data = await loadInvoiceDetail(kind, invoiceId);
+  if (!data) { $('page').innerHTML = emptyState('تعذّر العثور على هذه الفاتورة.'); return; }
+  const { inv, items, contact, payments, remaining, paid } = data;
+  const st = payStatusOf(Number(inv.totalPiasters || 0), paid);
+  const contactId = isSales ? inv.customerId : inv.supplierId;
+  currentPage = 'invoice-detail';
+  document.querySelectorAll('.nav-item[data-page]').forEach((b) => b.classList.remove('active'));
+  $('page').innerHTML = `
+    <h2 class="page-title">🧾 ${isSales ? 'فاتورة مبيعات' : 'فاتورة مشتريات'} ${esc(inv.invoiceNumber || '')}</h2>
+    <p><button class="btn small secondary" id="inv-detail-back">← عودة</button></p>
+    <div class="toolbar">
+      <button class="btn" id="inv-print-btn" style="width:auto">🖨️ طباعة الفاتورة (A4)</button>
+      ${remaining > 0 && contactId ? `<button class="btn" id="inv-pay-btn" style="width:auto">💰 تسديد جزء (المتبقي ${fmtEGP(remaining)})</button>` : ''}
+    </div>
+    ${invoiceSheetHTML(kind, inv, items, contact, paid, remaining)}
+    <div id="pay-form-area"></div>
+    <div class="card" style="margin-top:14px"><h3>سجل الدفعات على هذه الفاتورة</h3>
+    ${payments.length ? `<table><tr><th>التاريخ</th><th>طريقة الدفع</th><th>المبلغ</th><th>ملاحظات</th></tr>
+      ${payments.map((p) => `<tr><td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td>
+      <td>${payMethodLabel(p.paymentMethod)}</td><td class="num">${fmtEGP(p.amountPiasters)}</td><td>${esc(p.notes || '')}</td></tr>`).join('')}</table>`
+    : emptyState('لا توجد دفعات لاحقة مسجلة على هذه الفاتورة.')}
+    <p class="note">حالة السداد: <span class="badge ${payStatusBadgeCls(st)}">${payStatusLabel(st)}</span> — المدفوع ${fmtEGP(paid)} من إجمالي ${fmtEGP(inv.totalPiasters)}، والمتبقي ${fmtEGP(remaining)}.</p></div>`;
+  $('inv-detail-back').addEventListener('click', () => go(isSales ? 'sales' : 'purchases'));
+  $('inv-print-btn').addEventListener('click', () => printInvoice(kind, invoiceId));
+  const payBtn = $('inv-pay-btn');
+  if (payBtn) payBtn.addEventListener('click', () => {
+    if (!canRecordPayment(isSales ? 'customers' : 'suppliers')) {
+      alert('دورك الحالي لا يسمح بتسجيل دفعات ' + (isSales ? 'العملاء' : 'الموردين') + '.');
+      return;
+    }
+    openPayForm(isSales ? 'customers' : 'suppliers', contact, inv, remaining, () => renderInvoiceDetail(kind, invoiceId));
+  });
+}
+
+function printInvoice(kind, invoiceId) {
+  loadInvoiceDetail(kind, invoiceId).then((data) => {
+    if (!data) { alert('تعذّر العثور على هذه الفاتورة.'); return; }
+    const { inv, items, contact, paid, remaining } = data;
+    const area = $('print-area');
+    area.innerHTML = invoiceSheetHTML(kind, inv, items, contact, paid, remaining);
+    window.print();
+  });
+}
+
+function printStatement(kind, contact, openList, myPayments, invById) {
+  const isCust = kind === 'customers';
+  const totalDebt = openList.reduce((a, x) => a + x.remaining, 0);
+  const totalPaid = myPayments.reduce((a, p) => a + Number(p.amountPiasters || 0), 0);
+  const area = $('print-area');
+  area.innerHTML = `
+  <div class="inv-sheet" dir="rtl">
+    <div class="inv-head">
+      <div class="inv-brand">
+        <div class="inv-logo">الفلكي <span>لقطع غيار السيارات</span></div>
+        <div class="inv-brand-en" dir="ltr">Al-Falaky Auto Spare Parts</div>
+      </div>
+      <div class="inv-title">كشف حساب ${isCust ? 'عميل' : 'مورد'}</div>
+    </div>
+    <div class="inv-meta">
+      <div><span>${isCust ? 'العميل' : 'المورد'}:</span> <b>${esc(contact.name_ar)}</b></div>
+      <div><span>الهاتف:</span> <b dir="ltr">${esc(contact.phone || '—')}</b></div>
+      <div><span>التاريخ:</span> <b>${new Date().toLocaleDateString('ar-EG')}</b></div>
+      <div><span>المديونية المفتوحة:</span> <b>${fmtEGP(totalDebt)}</b></div>
+    </div>
+    <h3 style="color:#111;margin:14px 0 8px">الفواتير المفتوحة</h3>
+    ${openList.length ? `<table class="inv-table"><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr>
+      ${openList.map(({ inv, remaining, paid }) => `<tr>
+        <td dir="ltr">${esc(inv.invoiceNumber || inv.id)}</td>
+        <td>${tsToDate(inv.date || inv.createdAt).toLocaleDateString('ar-EG')}</td>
+        <td>${dueDateOf(inv).toLocaleDateString('ar-EG')}</td>
+        <td class="num">${fmtEGP(inv.totalPiasters)}</td><td class="num">${fmtEGP(paid)}</td><td class="num">${fmtEGP(remaining)}</td></tr>`).join('')}</table>`
+    : '<p>لا توجد فواتير مفتوحة.</p>'}
+    <h3 style="color:#111;margin:14px 0 8px">سجل الدفعات</h3>
+    ${myPayments.length ? `<table class="inv-table"><tr><th>التاريخ</th><th>الفاتورة</th><th>طريقة الدفع</th><th>المبلغ</th><th>ملاحظات</th></tr>
+      ${myPayments.map((p) => {
+        const invId = isCust ? p.salesInvoiceId : p.purchaseInvoiceId;
+        const inv = invId ? invById[invId] : null;
+        return `<tr><td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td>
+        <td dir="ltr">${inv ? esc(inv.invoiceNumber || inv.id) : 'على الحساب'}</td>
+        <td>${payMethodLabel(p.paymentMethod)}</td><td class="num">${fmtEGP(p.amountPiasters)}</td><td>${esc(p.notes || '')}</td></tr>`;
+      }).join('')}</table>
+      <div class="inv-totals"><div><span>إجمالي الدفعات:</span> <b>${fmtEGP(totalPaid)}</b></div></div>`
+    : '<p>لا توجد دفعات مسجلة.</p>'}
+    <div class="inv-foot"><div>كشف حساب صادر من نظام الفلكي لإدارة قطع غيار السيارات</div></div>
+  </div>`;
+  window.print();
 }
