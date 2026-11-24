@@ -41,6 +41,11 @@ let branches = [];      // [{id, name_ar}]
 let warehouses = [];
 let categories = [];
 let brands = [];
+let suppliersCache = []; // [{id, name_ar}] — للمورد في نموذج المنتج وبطاقاته
+let latestAlerts = [];   // تنبيهات لوحة التحكم الأخيرة (للجرس)
+let dashRange = 6;       // مدى الرسم الخطي: 3 / 6 / 12 شهر
+let branchRange = 'month'; // مدى أداء الفروع: month / quarter / all
+let uiLang = 'ar';       // لغة الواجهة: ar / en (الكروم فقط)
 let productsCache = []; // منتجات محملة للبحث السريع
 let balancesCache = {}; // productId -> quantity
 let currentPage = 'dashboard';
@@ -51,7 +56,38 @@ let charts = {};        // Chart.js instances (لتدميرها قبل إعاد�
 const $ = (id) => document.getElementById(id);
 const fmtEGP = (piasters) => (Number(piasters || 0) / 100)
   .toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ج.م';
+const fmtEGPNum = (piasters) => (Number(piasters || 0) / 100)
+  .toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtNum = (n) => Number(n || 0).toLocaleString('ar-EG');
+// نسبة التغير بين الشهر الحالي والشهر السابق (من بيانات Firestore الحقيقية)
+function pctDelta(cur, prev) {
+  if (!prev || Number(prev) === 0) return { text: '—', cls: 'flat' };
+  const d = Math.round(((Number(cur) - Number(prev)) / Number(prev)) * 100);
+  if (d === 0) return { text: '0%', cls: 'flat' };
+  return { text: `${d > 0 ? '↑' : '↓'} ${Math.abs(d)}%`, cls: d > 0 ? 'up' : 'down' };
+}
+// وقت نسبي بالعربي: منذ 5 دقائق / منذ ساعة / منذ يومين...
+function relTime(t) {
+  const d = tsToDate(t); if (!d || isNaN(d)) return 'الآن';
+  const mins = Math.max(0, Math.floor((Date.now() - d.getTime()) / 60000));
+  if (mins < 1) return 'الآن';
+  if (mins < 60) return `منذ ${mins} ${mins === 1 ? 'دقيقة' : mins === 2 ? 'دقيقتين' : 'دقيقة'}`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `منذ ${hrs} ${hrs === 1 ? 'ساعة' : hrs === 2 ? 'ساعتين' : 'ساعة'}`;
+  const days = Math.floor(hrs / 24);
+  return `منذ ${days} ${days === 1 ? 'يوم' : days === 2 ? 'يومين' : 'يوم'}`;
+}
+// أيقونة حسب التصنيف (لصور مصغرة لقائمة الأكثر مبيعاً)
+function categoryIcon(catId) {
+  const name = categoryName(catId || '');
+  if (/فرامل|brake/i.test(name)) return '🛑';
+  if (/فلتر|filter/i.test(name)) return '🛢️';
+  if (/محرك|engine/i.test(name)) return '⚙️';
+  if (/كهرب|electr/i.test(name)) return '🔌';
+  if (/تعليق|suspension/i.test(name)) return '🔩';
+  if (/إطار|tire|tyre/i.test(name)) return '🛞';
+  return '🔧';
+}
 const toPiasters = (egp) => Math.round(Number(egp || 0) * 100);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const tsToDate = (t) => (t && t.toDate) ? t.toDate() : (t instanceof Date ? t : new Date(t));
@@ -130,9 +166,10 @@ onAuthStateChanged(auth, async (user) => {
     orgId = me.orgId;
     $('login-screen').classList.add('hidden');
     $('app').classList.remove('hidden');
-    $('user-name').textContent = me.displayName + ' — ' + roleLabel(me.role);
+    $('user-name').textContent = me.displayName;
+    $('user-role').textContent = roleLabel(me.role);
     $('user-avatar').textContent = (me.displayName || '?').trim().charAt(0);
-    $('conn-badge').textContent = '● متصل بـ Firestore';
+    startLiveClock();
     await loadLookups();
     buildNav();
     await go('dashboard');
@@ -154,35 +191,83 @@ function isOwner() { return me && me.role === 'owner'; }
 const NAV = [
   { id: 'dashboard',  label: 'الرئيسية',        ico: '🏠', ownerOnly: false },
   { id: 'sales',      label: 'المبيعات',        ico: '🛒', ownerOnly: false },
-  { id: 'purchases',  label: 'المشتريات',      ico: '📦', ownerOnly: false },
-  { id: 'inventory',  label: 'المخزون',        ico: '📦', ownerOnly: false },
+  { id: 'purchases',  label: 'المشتريات',      ico: '🛍️', ownerOnly: false },
+  { id: 'products',   label: 'المنتجات',        ico: '📦', ownerOnly: false },
+  { id: 'inventory',  label: 'المخزون',        ico: '🗃️', ownerOnly: false },
   { id: 'accounts',   label: 'الحسابات',       ico: '💰', ownerOnly: true  },
   { id: 'reports',    label: 'التقارير والتحليلات', ico: '📊', ownerOnly: true },
   { id: 'customers',  label: 'إدارة العملاء',   ico: '👥', ownerOnly: false },
   { id: 'suppliers',  label: 'إدارة الموردين',  ico: '🤝', ownerOnly: false },
   { id: 'branches',   label: 'إدارة الفروع',    ico: '📍', ownerOnly: true  },
   { id: 'employees',  label: 'إدارة الموظفين',  ico: '👤', ownerOnly: true  },
-  { id: 'settings',   label: 'الإعدادات',      ico: '⚙️', ownerOnly: true  }
+  { id: 'settings',   label: 'الإعدادات',      ico: '⚙️', ownerOnly: true  },
+  { id: 'help',       label: 'المساعدة والدعم', ico: '❓', ownerOnly: false }
 ];
-const ALL_INTERFACES = ['dashboard', 'sales', 'purchases', 'inventory', 'customers', 'suppliers'];
+const NAV_EN = {
+  dashboard: 'Dashboard', sales: 'Sales', purchases: 'Purchases', products: 'Products',
+  inventory: 'Inventory', accounts: 'Accounts', reports: 'Reports & Analytics',
+  customers: 'Customers', suppliers: 'Suppliers', branches: 'Branches',
+  employees: 'Employees', settings: 'Settings', help: 'Help & Support'
+};
+const ALL_INTERFACES = ['dashboard', 'sales', 'purchases', 'products', 'inventory', 'customers', 'suppliers'];
 
 function visibleNav() {
   if (isOwner()) return NAV;
   // الموظف: فقط الواجهات المكتوبة في مستند users الخاص به
   const allowed = new Set(me.interfaces || ALL_INTERFACES);
-  return NAV.filter((n) => n.id === 'dashboard' || allowed.has(n.id));
+  return NAV.filter((n) => n.id === 'dashboard' || n.id === 'help' || allowed.has(n.id));
 }
 function canSee(page) {
   if (isOwner()) return true;
-  if (page === 'dashboard') return true;
+  if (page === 'dashboard' || page === 'help' || page === 'ai') return true;
   return (me.interfaces || ALL_INTERFACES).includes(page);
 }
 function buildNav() {
   $('main-nav').innerHTML = visibleNav().map((n) =>
-    `<button class="nav-item" data-page="${n.id}"><span class="ico">${n.ico}</span> ${n.label}</button>`).join('');
+    `<button class="nav-item" data-page="${n.id}"><span class="ico">${n.ico}</span> ${uiLang === 'en' ? (NAV_EN[n.id] || n.label) : n.label}</button>`).join('');
   document.querySelectorAll('.nav-item[data-page]').forEach((b) =>
     b.addEventListener('click', () => go(b.dataset.page)));
 }
+
+// --- الساعة الحية في الفوتر + الجرس + اللغة + القائمة ---
+function startLiveClock() {
+  const tick = () => {
+    const el = $('live-clock'); if (!el) return;
+    el.textContent = new Date().toLocaleDateString('ar-EG') + ' ' + new Date().toLocaleTimeString('ar-EG');
+  };
+  tick(); setInterval(tick, 1000);
+}
+function updateBell() {
+  const badge = $('bell-badge');
+  if (!badge) return;
+  const n = latestAlerts.length;
+  badge.textContent = n > 9 ? '9+' : String(n);
+  badge.classList.toggle('hidden', n === 0);
+}
+function renderNotifDropdown() {
+  const dd = $('notif-dropdown'); if (!dd) return;
+  dd.innerHTML = '<h4>🔔 التنبيهات</h4>' + (latestAlerts.length
+    ? latestAlerts.map((a) => `<div class="notif-item" data-notif-go="${a.page || 'dashboard'}"><span>${a.ico}</span><span>${esc(a.text)}<br><small style="color:var(--muted)">${a.time}</small></span></div>`).join('')
+    : '<div class="empty">لا توجد تنبيهات حالياً.</div>');
+  dd.querySelectorAll('[data-notif-go]').forEach((el) => el.addEventListener('click', () => { dd.classList.add('hidden'); go(el.dataset.notifGo); }));
+}
+function toggleLang() {
+  uiLang = uiLang === 'ar' ? 'en' : 'ar';
+  document.documentElement.lang = uiLang;
+  $('lang-btn').textContent = uiLang === 'ar' ? 'English 🌐' : 'عربي 🌐';
+  $('global-search').placeholder = uiLang === 'en' ? 'Search product, part number or car...' : 'ابحث عن منتج، رقم قطعة أو سيارة...';
+  buildNav();
+  if (currentPage) go(currentPage);
+}
+$('menu-btn').addEventListener('click', () => document.body.classList.toggle('sidebar-hidden'));
+$('settings-btn').addEventListener('click', () => go('settings'));
+$('lang-btn').addEventListener('click', toggleLang);
+$('ai-start-btn').addEventListener('click', () => go('ai'));
+$('bell-btn').addEventListener('click', () => { renderNotifDropdown(); $('notif-dropdown').classList.toggle('hidden'); });
+document.addEventListener('click', (e) => {
+  const dd = $('notif-dropdown');
+  if (dd && !dd.classList.contains('hidden') && !e.target.closest('.bell-wrap')) dd.classList.add('hidden');
+});
 
 async function go(page) {
   if (!canSee(page)) { $('page').innerHTML = emptyState('ليس لديك صلاحية لعرض هذه الصفحة.'); return; }
@@ -190,9 +275,10 @@ async function go(page) {
   document.querySelectorAll('.nav-item[data-page]').forEach((b) =>
     b.classList.toggle('active', b.dataset.page === page));
   const renderers = { dashboard: renderDashboard, sales: renderPOS, purchases: renderPurchases,
-    inventory: renderInventory, accounts: renderAccounts, reports: renderReports,
+    products: renderProducts, inventory: renderInventory, accounts: renderAccounts, reports: renderReports,
     customers: () => renderContacts('customers'), suppliers: () => renderContacts('suppliers'),
-    branches: renderBranches, employees: renderEmployees, settings: renderSettings };
+    branches: renderBranches, employees: renderEmployees, settings: renderSettings,
+    ai: renderAI, help: renderHelp };
   $('page').innerHTML = '<div class="empty">جارٍ تحميل البيانات من Firestore...</div>';
   try { await renderers[page](); }
   catch (err) { $('page').innerHTML = `<div class="error show">${esc(firestoreErrorMessage(err))}</div>`; }
@@ -200,20 +286,24 @@ async function go(page) {
 
 // بيانات مرجعية: فروع/مخازن/تصنيفات/علامات (للقوائم المنسدلة)
 async function loadLookups() {
-  const [b, w, c, br] = await Promise.all([
+  const [b, w, c, br, s] = await Promise.all([
     getDocs(query(collection(db, 'branches'), where('orgId', '==', orgId), limit(100))),
     getDocs(query(collection(db, 'warehouses'), where('orgId', '==', orgId), limit(100))),
     getDocs(query(collection(db, 'categories'), where('orgId', '==', orgId), limit(200))),
-    getDocs(query(collection(db, 'brands'), where('orgId', '==', orgId), limit(200)))
+    getDocs(query(collection(db, 'brands'), where('orgId', '==', orgId), limit(200))),
+    getDocs(query(collection(db, 'suppliers'), where('orgId', '==', orgId), limit(200)))
   ]);
   branches = b.docs.map((d) => ({ id: d.id, ...d.data() }));
   warehouses = w.docs.map((d) => ({ id: d.id, ...d.data() }));
   categories = c.docs.map((d) => ({ id: d.id, ...d.data() }));
   brands = br.docs.map((d) => ({ id: d.id, ...d.data() }));
+  suppliersCache = s.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 function branchName(id) { return (branches.find((b) => b.id === id) || {}).name_ar || id || '—'; }
 function categoryName(id) { return (categories.find((c) => c.id === id) || {}).name_ar || '—'; }
 function brandName(id) { return (brands.find((b) => b.id === id) || {}).name_ar || '—'; }
+function supplierName(id) { return (suppliersCache.find((s) => s.id === id) || {}).name_ar || '—'; }
+function canSeePrices() { return isOwner() || me.role === 'manager' || me.role === 'accountant'; }
 
 // ============================================================================
 // 3) تحميل البيانات من Firestore (كلها مقيدة بـ orgId)
@@ -250,13 +340,26 @@ async function renderDashboard() {
   const postedPurchases = purchases.filter((p) => p.status === 'posted');
   const totalSales = posted.reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
   const totalPurchases = postedPurchases.reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
-  // الربح = الإيراد − تكلفة البضاعة المباعة (من بنود الفواتير إن وُجدت)
-  let cogs = 0;
+  const monthKey = (d) => `${d.getFullYear()}-${d.getMonth()}`;
+  const monthSum = (list, y, m) => list.filter((s) => { const t = tsToDate(s.date || s.createdAt); return t.getFullYear() === y && t.getMonth() === m; })
+    .reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
+  const now = new Date();
+  const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const salesCur = monthSum(posted, now.getFullYear(), now.getMonth());
+  const salesPrev = monthSum(posted, prevMonth.getFullYear(), prevMonth.getMonth());
+  const purchCur = monthSum(postedPurchases, now.getFullYear(), now.getMonth());
+  const purchPrev = monthSum(postedPurchases, prevMonth.getFullYear(), prevMonth.getMonth());
+  // الربح = الإيراد − تكلفة البضاعة المباعة (من بنود آخر 60 فاتورة)، وحساب التكلفة حسب الشهر
+  const cogsByMonth = {};
   for (const inv of posted.slice(0, 60)) {
     const items = await getDocs(collection(db, 'salesInvoices', inv.id, 'items'));
-    items.forEach((it) => { const d = it.data(); cogs += Number(d.costPricePiasters || 0) * Number(d.quantity || 0); });
+    const k = monthKey(tsToDate(inv.date || inv.createdAt));
+    items.forEach((it) => { const d = it.data(); cogsByMonth[k] = (cogsByMonth[k] || 0) + Number(d.costPricePiasters || 0) * Number(d.quantity || 0); });
   }
+  const cogs = Object.values(cogsByMonth).reduce((a, v) => a + v, 0);
   const profit = totalSales - cogs;
+  const profitCur = salesCur - (cogsByMonth[monthKey(now)] || 0);
+  const profitPrev = salesPrev - (cogsByMonth[monthKey(prevMonth)] || 0);
   // قيمة المخزون = مجموع (الرصيد × سعر الشراء)
   const prodById = Object.fromEntries(productsCache.map((p) => [p.id, p]));
   const inventoryValue = bals.reduce((a, b) =>
@@ -270,26 +373,35 @@ async function renderDashboard() {
     items.forEach((it) => { const d = it.data(); soldQty[d.productId] = (soldQty[d.productId] || 0) + Number(d.quantity || 0); });
   }
   const best = Object.entries(soldQty).sort((a, b) => b[1] - a[1]).slice(0, 5)
-    .map(([pid, qty], i) => ({ rank: i + 1, name: (prodById[pid] || {}).name_ar || pid, qty }));
+    .map(([pid, qty], i) => ({ rank: i + 1, name: (prodById[pid] || {}).name_ar || pid,
+      categoryId: (prodById[pid] || {}).categoryId, partNumber: (prodById[pid] || {}).partNumber || '', qty }));
 
   // تنبيهات المخزون المنخفض
   const lowStock = productsCache.filter((p) => {
     const q = productStock(p); return q !== null && Number(p.minStock || 0) > 0 && q < Number(p.minStock);
   });
   const outStock = productsCache.filter((p) => productStock(p) === 0);
-  const inStockCount = productsCache.length ? Math.round(100 * productsCache.filter((p) => (productStock(p) ?? 0) > 0).length / productsCache.length) : 0;
+  const inStockPct = productsCache.length ? Math.round(100 * productsCache.filter((p) => (productStock(p) ?? 0) > 0).length / productsCache.length) : 0;
 
-  // مبيعات ومشتريات آخر 6 أشهر
+  // التنبيهات — من بيانات Firestore الحقيقية فقط
+  const alerts = [];
+  lowStock.slice(0, 3).forEach((p) => alerts.push({ ico: '⚠️', text: `انخفاض في مخزون ${p.name_ar} — متبقي ${fmtNum(productStock(p))} قطعة`, time: relTime(p.updatedAt || p.createdAt), page: 'inventory' }));
+  [...customers].sort((a, b) => tsToDate(b.createdAt) - tsToDate(a.createdAt)).slice(0, 2)
+    .forEach((c) => alerts.push({ ico: '👤', text: `عميل جديد سجل في النظام: ${c.name_ar}`, time: relTime(c.createdAt), page: 'customers' }));
+  [...postedPurchases].sort((a, b) => tsToDate(b.createdAt) - tsToDate(a.createdAt)).slice(0, 1)
+    .forEach((p) => alerts.push({ ico: '📦', text: `دفعة جديدة من المورد ${supplierName(p.supplierId)}`, time: relTime(p.createdAt), page: 'purchases' }));
+  postedPurchases.filter((p) => Number(p.remainingPiasters || 0) > 0).slice(0, 2)
+    .forEach((p) => alerts.push({ ico: '💳', text: `موعد دفع مستحقات المورد ${supplierName(p.supplierId)} — متبقي ${fmtEGP(p.remainingPiasters)}`, time: relTime(p.date || p.createdAt), page: 'purchases' }));
+  if (!alerts.length && productsCache.length) alerts.push({ ico: '✅', text: 'لا توجد تنبيهات حرجة — المخزون والفواتير في وضع جيد.', time: 'الآن', page: 'dashboard' });
+  latestAlerts = alerts; updateBell();
+
+  // مبيعات ومشتريات آخر N أشهر (حسب الفلتر)
   const months = [], salesByMonth = [], purchByMonth = [];
-  const now = new Date();
-  for (let i = 5; i >= 0; i--) {
+  for (let i = dashRange - 1; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     months.push(d.toLocaleDateString('ar-EG', { month: 'long' }));
-    const key = `${d.getFullYear()}-${d.getMonth()}`;
-    salesByMonth.push(posted.filter((s) => { const t = tsToDate(s.date || s.createdAt); return `${t.getFullYear()}-${t.getMonth()}` === key; })
-      .reduce((a, s) => a + Number(s.totalPiasters || 0), 0) / 100);
-    purchByMonth.push(postedPurchases.filter((s) => { const t = tsToDate(s.date || s.createdAt); return `${t.getFullYear()}-${t.getMonth()}` === key; })
-      .reduce((a, s) => a + Number(s.totalPiasters || 0), 0) / 100);
+    salesByMonth.push(monthSum(posted, d.getFullYear(), d.getMonth()) / 100);
+    purchByMonth.push(monthSum(postedPurchases, d.getFullYear(), d.getMonth()) / 100);
   }
   // مبيعات حسب الفئة (من بنود الفواتير)
   const catTotals = {};
@@ -298,54 +410,136 @@ async function renderDashboard() {
     items.forEach((it) => { const d = it.data(); const cat = categoryName((prodById[d.productId] || {}).categoryId);
       catTotals[cat] = (catTotals[cat] || 0) + Number(d.lineTotalPiasters || 0); });
   }
-  // أداء الفروع
+  const catEntries = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
+  const catColors = ['#2f81f7', '#f0883e', '#3fb950', '#a371f7', '#8b98a9', '#39c5cf'];
+  // أداء الفروع (حسب فلتر المدة)
   const branchTotals = {};
-  posted.forEach((s) => { branchTotals[s.branchId] = (branchTotals[s.branchId] || 0) + Number(s.totalPiasters || 0); });
+  posted.forEach((s) => {
+    const t = tsToDate(s.date || s.createdAt);
+    if (branchRange === 'month' && (t.getFullYear() !== now.getFullYear() || t.getMonth() !== now.getMonth())) return;
+    if (branchRange === 'quarter' && t < new Date(now.getFullYear(), now.getMonth() - 2, 1)) return;
+    branchTotals[s.branchId] = (branchTotals[s.branchId] || 0) + Number(s.totalPiasters || 0);
+  });
+  const branchLabels = Object.keys(branchTotals).map(branchName);
+  const branchValues = Object.values(branchTotals).map((v) => v / 100);
 
   const hasAny = posted.length || postedPurchases.length || productsCache.length;
+  const dSales = pctDelta(salesCur, salesPrev);
+  const dPurch = pctDelta(purchCur, purchPrev);
+  const dProfit = pctDelta(profitCur, profitPrev);
+  const ringC = 2 * Math.PI * 52;
+  const ringColor = inStockPct >= 80 ? '#3fb950' : inStockPct >= 50 ? '#f0883e' : '#f85149';
+  const stockStatus = inStockPct >= 80 ? { text: 'مخزون آمن ✓', cls: 'ok' } : inStockPct >= 50 ? { text: 'مخزون يحتاج متابعة', cls: 'warn' } : { text: 'مخزون حرج — راجع المشتريات', cls: 'bad' };
+  const medalCls = (r) => r === 1 ? 'gold' : r === 2 ? 'silver' : r === 3 ? 'bronze' : 'plain';
+
+  const heroArt = `<div class="hero-art"><svg viewBox="0 0 640 190" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+    <defs>
+      <linearGradient id="carBody" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#123a7a"/><stop offset=".5" stop-color="#1d4ed8"/><stop offset="1" stop-color="#0a1628"/></linearGradient>
+      <linearGradient id="beam" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#58a6ff" stop-opacity=".8"/><stop offset="1" stop-color="#58a6ff" stop-opacity="0"/></linearGradient>
+    </defs>
+    <polygon points="60,0 110,0 40,190 0,190" fill="url(#beam)" opacity=".35"/>
+    <polygon points="180,0 200,0 120,190 90,190" fill="url(#beam)" opacity=".2"/>
+    <g transform="translate(520,95)"><circle r="42" fill="#1c2b45" stroke="#58a6ff" stroke-width="2" opacity=".9"/><circle r="30" fill="none" stroke="#8b98a9" stroke-width="1.5" stroke-dasharray="4 5"/><circle r="12" fill="#0a1628" stroke="#58a6ff" stroke-width="2"/></g>
+    <g transform="translate(448,128)"><rect x="-16" y="-34" width="32" height="56" rx="8" fill="#f0883e" opacity=".9"/><rect x="-16" y="-34" width="32" height="10" rx="5" fill="#c25e1e"/><line x1="-16" y1="-14" x2="16" y2="-14" stroke="#c25e1e" stroke-width="2"/><line x1="-16" y1="-2" x2="16" y2="-2" stroke="#c25e1e" stroke-width="2"/></g>
+    <g>
+      <path d="M40 150 L52 128 Q58 118 74 116 L108 112 Q130 92 168 88 L250 86 Q292 86 322 96 L360 104 Q410 110 440 122 L470 128 Q492 132 494 142 L492 152 Q490 158 480 158 L452 158 A26 26 0 0 0 400 158 L210 158 A26 26 0 0 0 158 158 L70 158 Q44 158 40 150 Z" fill="url(#carBody)" stroke="#58a6ff" stroke-width="1.5"/>
+      <path d="M118 110 L140 94 L196 92 L232 90 L262 96 L276 104 L250 110 Z" fill="#bcd6ff" opacity=".85"/>
+      <path d="M284 98 L318 100 L344 106 L300 110 Z" fill="#bcd6ff" opacity=".7"/>
+      <circle cx="184" cy="158" r="24" fill="#050d1d" stroke="#58a6ff" stroke-width="3"/><circle cx="184" cy="158" r="10" fill="none" stroke="#8b98a9" stroke-width="2"/>
+      <circle cx="426" cy="158" r="24" fill="#050d1d" stroke="#58a6ff" stroke-width="3"/><circle cx="426" cy="158" r="10" fill="none" stroke="#8b98a9" stroke-width="2"/>
+      <ellipse cx="60" cy="140" rx="14" ry="5" fill="#e6edf3" opacity=".9"/>
+    </g>
+  </svg></div>`;
+
   $('page').innerHTML = `
-    <div class="hero"><h2>إدارة أذكى .. لعمل أكثر نجاحاً</h2><p>مع نظام الفلكي المتكامل لقطع غيار السيارات — كل الأرقام أدناه من قاعدة بيانات Firestore مباشرة.</p></div>
+    <div class="hero">${heroArt}<div class="hero-text"><h2>إدارة أذكى .. لعمل أكثر نجاحاً</h2><p>مع نظام الفلكي المتكامل لقطع غيار السيارات — كل الأرقام أدناه من قاعدة بيانات Firestore مباشرة.</p></div></div>
     <div class="kpi-grid">
-      <div class="card kpi"><div class="ico">🛒</div><div class="value">${fmtEGP(totalSales)}</div><div class="label">إجمالي المبيعات</div></div>
-      <div class="card kpi"><div class="ico">📈</div><div class="value">${fmtEGP(profit)}</div><div class="label">صافي الربح (إيراد − تكلفة)</div></div>
-      <div class="card kpi"><div class="ico">📦</div><div class="value">${fmtEGP(totalPurchases)}</div><div class="label">إجمالي المشتريات</div></div>
-      <div class="card kpi"><div class="ico">🏷️</div><div class="value">${fmtEGP(inventoryValue)}</div><div class="label">قيمة المخزون الإجمالية</div></div>
-      <div class="card kpi"><div class="ico">👥</div><div class="value">${fmtNum(activeCustomers)}</div><div class="label">عملاء نشطين</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(inventoryValue)}<span class="unit">ج.م</span></div><div class="label">قيمة المخزون الإجمالية</div><div class="delta flat">—</div></div><div class="ico">📦</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(totalPurchases)}<span class="unit">ج.م</span></div><div class="label">إجمالي المشتريات</div><div class="delta ${dPurch.cls}">${dPurch.text}</div></div><div class="ico">🤝</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(totalSales)}<span class="unit">ج.م</span></div><div class="label">إجمالي المبيعات</div><div class="delta ${dSales.cls}">${dSales.text}</div></div><div class="ico">🛒</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(profit)}<span class="unit">ج.م</span></div><div class="label">صافي الربح</div><div class="delta ${dProfit.cls}">${dProfit.text}</div></div><div class="ico">📈</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(activeCustomers)}</div><div class="label">عملاء نشطين</div><div class="delta flat">—</div></div><div class="ico">👥</div></div>
     </div>
-    ${hasAny ? '' : `<div class="card">${emptyState('لا توجد بيانات بعد في Firestore — أنشئ منتجات وفواتير من صفحتي المخزون والمبيعات، وستظهر المؤشرات هنا تلقائياً.')}</div>`}
-    <div class="grid-2">
+    ${hasAny ? '' : `<div class="card">${emptyState('لا توجد بيانات بعد في Firestore — أنشئ منتجات وفواتير من صفحتي المنتجات والمبيعات، وستظهر المؤشرات هنا تلقائياً.')}</div>`}
+    <div class="dash-row2">
       <div class="card"><h3>🏆 أكثر المنتجات مبيعاً</h3>
-        ${best.length ? best.map((b) => `<div class="list-row"><span>${b.rank}️⃣ ${esc(b.name)}</span><b>${fmtNum(b.qty)} قطعة</b></div>`).join('') : emptyState('لا توجد مبيعات مسجلة بعد.')}</div>
-      <div class="card"><h3>📊 المبيعات والمشتريات خلال 6 أشهر</h3><div class="chart-wrap"><canvas id="chart-sales"></canvas></div></div>
-    </div>
-    <div class="grid-3">
-      <div class="card"><h3>🍩 توزيع المبيعات حسب الفئة</h3><div class="chart-wrap small"><canvas id="chart-cat"></canvas></div>
-        ${Object.keys(catTotals).length ? '' : emptyState('لا توجد مبيعات حسب الفئة بعد.')}</div>
-      <div class="card"><h3>⚠️ التنبيهات والمخزون</h3>
-        <div class="list-row"><span>🔴 منتجات ناقصة (أقل من الحد)</span><b>${fmtNum(lowStock.length)}</b></div>
-        <div class="list-row"><span>❌ منتجات نافدة</span><b>${fmtNum(outStock.length)}</b></div>
-        <div class="list-row"><span>✅ نسبة المنتجات المتوفرة</span><b>${inStockCount}%</b></div>
-        <div class="progress"><div style="width:${inStockCount}%"></div></div>
-        ${lowStock.slice(0, 5).map((p) => `<div class="list-row"><span>${esc(p.name_ar)}</span><span class="badge warn">متبقي ${fmtNum(productStock(p))} / حد ${fmtNum(p.minStock)}</span></div>`).join('')}
+        ${best.length ? best.map((b) => `<div class="best-row"><span class="medal ${medalCls(b.rank)}">${b.rank}</span><span class="best-thumb">${categoryIcon(b.categoryId)}</span><span class="best-info"><b>${esc(b.name)}</b><small dir="ltr">${esc(b.partNumber)}</small></span><span class="best-qty">${fmtNum(b.qty)} قطعة</span></div>`).join('') : emptyState('لا توجد مبيعات مسجلة بعد.')}</div>
+      <div class="card">
+        <div class="card-head"><h3>📊 المبيعات والمشتريات خلال ${dashRange} أشهر</h3>
+          <select id="dash-range"><option value="3" ${dashRange === 3 ? 'selected' : ''}>3 أشهر</option><option value="6" ${dashRange === 6 ? 'selected' : ''}>6 أشهر</option><option value="12" ${dashRange === 12 ? 'selected' : ''}>12 شهر</option></select></div>
+        <div class="chart-wrap"><canvas id="chart-sales"></canvas></div>
       </div>
-      <div class="card"><h3>🏢 أداء الفروع</h3>
-        ${Object.keys(branchTotals).length ? Object.entries(branchTotals).map(([bid, v]) =>
-          `<div class="list-row"><span>${esc(branchName(bid))}</span><b class="num">${fmtEGP(v)}</b></div>`).join('') : emptyState('لا توجد مبيعات حسب الفرع بعد.')}
+      <div class="card"><h3>🍩 توزيع المبيعات حسب الفئة</h3>
+        ${catEntries.length ? `<div class="donut-wrap"><div class="chart-wrap"><canvas id="chart-cat"></canvas></div>
+        <div class="donut-legend">${catEntries.map(([cat, v], i) => `<div class="leg-row"><span class="dot" style="background:${catColors[i % catColors.length]}"></span><span>${esc(cat)}</span><span class="pct">${Math.round(v / totalSales * 100)}%</span></div>`).join('')}</div></div>`
+        : emptyState('لا توجد مبيعات حسب الفئة بعد.')}</div>
+    </div>
+    <div class="dash-row3">
+      <div class="card">
+        <div class="card-head"><h3>🔔 التنبيهات والتنبيهات</h3><button class="link-btn" id="alerts-all-btn">عرض الكل</button></div>
+        ${alerts.length ? alerts.slice(0, 4).map((a) => `<div class="alert-row"><span class="a-ico">${a.ico}</span><span>${esc(a.text)}</span><span class="a-time">${a.time}</span></div>`).join('') + (alerts.length > 4 ? `<div class="alerts-more hidden">${alerts.slice(4).map((a) => `<div class="alert-row"><span class="a-ico">${a.ico}</span><span>${esc(a.text)}</span><span class="a-time">${a.time}</span></div>`).join('')}</div>` : '') : emptyState('لا توجد تنبيهات حالياً.')}
+      </div>
+      <div class="card"><h3>📦 حالة المخزون</h3>
+        <div class="stock-ring-wrap">
+          <div class="stock-ring">
+            <svg width="120" height="120" viewBox="0 0 120 120">
+              <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(139,152,169,.2)" stroke-width="10"/>
+              <circle cx="60" cy="60" r="52" fill="none" stroke="${ringColor}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${ringC.toFixed(1)}" stroke-dashoffset="${(ringC * (1 - inStockPct / 100)).toFixed(1)}"/>
+            </svg>
+            <div class="ring-center"><b>${inStockPct}%</b><small>متوفر</small></div>
+          </div>
+          <div class="stock-stats">
+            <div class="stock-stat"><span>⚠️ منتج منخفض المخزون</span><b>${fmtNum(lowStock.length)}</b></div>
+            <div class="stock-stat"><span>❌ منتج نفد من المخزون</span><b>${fmtNum(outStock.length)}</b></div>
+            <div class="stock-status ${stockStatus.cls}">${stockStatus.text}</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>🏢 أداء الفروع</h3>
+          <select id="branch-range"><option value="month" ${branchRange === 'month' ? 'selected' : ''}>هذا الشهر</option><option value="quarter" ${branchRange === 'quarter' ? 'selected' : ''}>آخر 3 أشهر</option><option value="all" ${branchRange === 'all' ? 'selected' : ''}>كل الفترات</option></select></div>
+        ${branchLabels.length ? `<div class="chart-wrap small"><canvas id="chart-branches"></canvas></div>` : emptyState('لا توجد مبيعات حسب الفرع بعد.')}
       </div>
     </div>`;
 
-  destroyChart('sales'); destroyChart('cat');
+  $('dash-range').addEventListener('change', (e) => { dashRange = Number(e.target.value); renderDashboard(); });
+  $('branch-range').addEventListener('change', (e) => { branchRange = e.target.value; renderDashboard(); });
+  $('alerts-all-btn').addEventListener('click', (e) => {
+    const more = document.querySelector('.alerts-more');
+    if (more) { more.classList.toggle('hidden'); e.target.textContent = more.classList.contains('hidden') ? 'عرض الكل' : 'عرض أقل'; }
+  });
+
+  destroyChart('sales'); destroyChart('cat'); destroyChart('branches');
+  const kTick = (v) => v >= 1000 ? (v / 1000) + 'K' : v;
   charts.sales = new Chart($('chart-sales'), { type: 'line',
     data: { labels: months, datasets: [
-      { label: 'المبيعات', data: salesByMonth, borderColor: '#2f81f7', backgroundColor: 'rgba(47,129,247,.2)', fill: true, tension: 0.4 },
-      { label: 'المشتريات', data: purchByMonth, borderColor: '#f0883e', backgroundColor: 'rgba(240,136,62,.15)', fill: true, tension: 0.4 } ] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#e6edf3' } } },
-      scales: { x: { ticks: { color: '#8b98a9' } }, y: { ticks: { color: '#8b98a9' } } } } });
-  if (Object.keys(catTotals).length) {
+      { label: 'المبيعات', data: salesByMonth, borderColor: '#2f81f7', backgroundColor: 'rgba(47,129,247,.2)', fill: true, tension: 0.4, pointBackgroundColor: '#2f81f7' },
+      { label: 'المشتريات', data: purchByMonth, borderColor: '#f0883e', backgroundColor: 'rgba(240,136,62,.15)', fill: true, tension: 0.4, pointBackgroundColor: '#f0883e' } ] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#e6edf3', usePointStyle: true } } },
+      scales: { x: { ticks: { color: '#8b98a9' }, grid: { color: 'rgba(139,152,169,.08)' } },
+        y: { ticks: { color: '#8b98a9', callback: kTick }, grid: { color: 'rgba(139,152,169,.08)' } } } } });
+  if (catEntries.length) {
+    const donutTotal = fmtEGPNum(totalSales);
+    const centerText = { id: 'centerText', afterDraw(chart) {
+      const meta = chart.getDatasetMeta(0); if (!meta.data[0]) return;
+      const { x, y } = meta.data[0]; const ctx = chart.ctx;
+      ctx.save(); ctx.textAlign = 'center'; ctx.fillStyle = '#e6edf3';
+      ctx.font = '800 19px Cairo, sans-serif'; ctx.fillText(donutTotal, x, y - 2);
+      ctx.font = '600 12px Cairo, sans-serif'; ctx.fillStyle = '#8b98a9'; ctx.fillText('ج.م', x, y + 16); ctx.restore();
+    } };
     charts.cat = new Chart($('chart-cat'), { type: 'doughnut',
-      data: { labels: Object.keys(catTotals), datasets: [{ data: Object.values(catTotals).map((v) => v / 100),
-        backgroundColor: ['#2f81f7', '#f0883e', '#3fb950', '#a371f7', '#39c5cf', '#8b98a9'] }] },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#e6edf3' } } } } });
+      data: { labels: catEntries.map(([c]) => c), datasets: [{ data: catEntries.map(([, v]) => v / 100),
+        backgroundColor: catColors, borderColor: '#0d1f3c', borderWidth: 2 }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: { legend: { display: false } } }, plugins: [centerText] });
+  }
+  if (branchLabels.length) {
+    charts.branches = new Chart($('chart-branches'), { type: 'bar',
+      data: { labels: branchLabels, datasets: [{ label: 'المبيعات (ج.م)', data: branchValues,
+        backgroundColor: '#2f81f7', borderRadius: 6, maxBarThickness: 60 }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+        scales: { x: { ticks: { color: '#8b98a9' }, grid: { display: false } },
+          y: { ticks: { color: '#8b98a9', callback: kTick }, grid: { color: 'rgba(139,152,169,.08)' } } } } });
   }
 }
 
@@ -377,29 +571,36 @@ async function searchProducts(q) {
 
 function productCardHTML(p) {
   const stock = productStock(p);
-  return `<div class="card">
-    <h3>${esc(p.name_ar)} ${p.name_en ? `<small style="color:var(--muted)">(${esc(p.name_en)})</small>` : ''}</h3>
+  const inactive = p.isActive === false;
+  const vehicles = (p.vehicleCompatibility || []).slice(0, 2);
+  return `<div class="card" ${inactive ? 'style="opacity:.6"' : ''}>
+    <h3>${esc(p.name_ar)} ${p.name_en ? `<small style="color:var(--muted)">(${esc(p.name_en)})</small>` : ''} ${inactive ? '<span class="badge bad">موقوف</span>' : ''}</h3>
     <div class="list-row"><span>رقم القطعة</span><b dir="ltr">${esc(p.partNumber || '—')}</b></div>
     <div class="list-row"><span>الباركود / QR</span><b dir="ltr">${esc(p.barcode || p.qrCode || '—')}</b></div>
     <div class="list-row"><span>سعر البيع</span><b>${fmtEGP(p.sellingPricePiasters)}</b></div>
-    ${isOwner() || me.role === 'manager' || me.role === 'accountant' ? `<div class="list-row"><span>سعر الشراء</span><b>${fmtEGP(p.purchasePricePiasters)}</b></div>` : ''}
+    ${canSeePrices() ? `<div class="list-row"><span>سعر الشراء</span><b>${fmtEGP(p.purchasePricePiasters)}</b></div>
+    <div class="list-row"><span>سعر الجملة</span><b>${fmtEGP(p.wholesalePricePiasters)}</b></div>` : ''}
     <div class="list-row"><span>المخزون المتاح</span><b>${stock === null ? 'غير مسجل' : fmtNum(stock) + ' قطعة'}</b></div>
+    <div class="list-row"><span>الوحدة</span><b>${esc(p.unit || 'قطعة')}</b></div>
+    <div class="list-row"><span>المورد</span><b>${esc(p.supplierId ? supplierName(p.supplierId) : '—')}</b></div>
     <div class="list-row"><span>المخزن / الرف</span><b>${esc(p.warehouseLocation || '—')} / ${esc(p.shelfNumber || '—')}</b></div>
     <div class="list-row"><span>التصنيف / العلامة</span><b>${esc(categoryName(p.categoryId))} / ${esc(brandName(p.brandId))}</b></div>
-    <div style="display:flex;gap:8px;margin-top:12px">
+    ${vehicles.length ? `<div class="list-row"><span>توافق السيارات</span><b>${esc(vehicles.join('، '))}${(p.vehicleCompatibility || []).length > 2 ? '…' : ''}</b></div>` : ''}
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
       <button class="btn small" data-add-sale="${p.id}">➕ إضافة للبيع</button>
       <button class="btn small secondary" data-edit-product="${p.id}">✏️ تعديل</button>
+      ${(isOwner() || me.role === 'manager') ? `<button class="btn small ${inactive ? '' : 'danger'}" data-toggle-product="${p.id}" data-active="${!inactive}">${inactive ? '✅ تفعيل' : '⛔ إيقاف'}</button>` : ''}
     </div></div>`;
 }
 
-async function renderInventory() {
+async function renderProducts() {
   await loadProducts();
   $('page').innerHTML = `
-    <h2 class="page-title">📦 المخزون والمنتجات</h2>
-    <p class="page-sub">البحث الذكي: رقم القطعة المطابق يظهر أولاً، ثم الباركود وQR والاسم.</p>
+    <h2 class="page-title">📦 المنتجات</h2>
+    <p class="page-sub">كتالوج المنتجات من Firestore — البحث الذكي: رقم القطعة المطابق يظهر أولاً، ثم الباركود وQR والاسم.</p>
     <div class="toolbar">
-      <input id="inv-search" type="search" placeholder="ابحث برقم القطعة، الباركود، أو الاسم...">
-      <button class="btn scan small" id="scan-btn-inv">📷 مسح باركود / QR</button>
+      <input id="inv-search" type="search" placeholder="ابحث بالاسم، رقم القطعة، الباركود، أو QR...">
+      <button class="btn scan small" id="scan-btn-inv">📷 بحث بالكاميرا</button>
       <button class="btn small" id="add-product-btn">➕ منتج جديد</button>
     </div>
     <div class="grid-3" id="products-grid"></div>`;
@@ -413,6 +614,41 @@ async function renderInventory() {
   $('add-product-btn').addEventListener('click', () => openProductForm());
   await draw('');
 }
+
+// --- المخزون: أرصدة المنتجات وحالتها (صفحة مستقلة عن كتالوج المنتجات) ---
+async function renderInventory() {
+  await loadProducts();
+  const rows = productsCache.map((p) => ({ p, stock: productStock(p) }));
+  const totalQty = rows.reduce((a, r) => a + (r.stock ?? 0), 0);
+  const prodById = Object.fromEntries(productsCache.map((p) => [p.id, p]));
+  const bals = await loadCollection('stockBalances');
+  const inventoryValue = bals.reduce((a, b) =>
+    a + Number(b.quantity || 0) * Number((prodById[b.productId] || {}).purchasePricePiasters || 0), 0);
+  const low = rows.filter((r) => r.stock !== null && Number(r.p.minStock || 0) > 0 && r.stock < Number(r.p.minStock)).length;
+  const out = rows.filter((r) => r.stock === 0).length;
+  $('page').innerHTML = `
+    <h2 class="page-title">🗃️ المخزون</h2>
+    <p class="page-sub">أرصدة المنتجات من stockBalances في Firestore — الرصيد نفسه لا يُكتب من العميل، بل يُحدَّث من الخادم الموثوق بناءً على حركات المخزون.</p>
+    <div class="kpi-grid">
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(productsCache.length)}</div><div class="label">عدد المنتجات</div></div><div class="ico">📦</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(totalQty)}</div><div class="label">إجمالي الكمية بالمخزون</div></div><div class="ico">🔢</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(inventoryValue)}<span class="unit">ج.م</span></div><div class="label">قيمة المخزون الإجمالية</div></div><div class="ico">💰</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(low)}</div><div class="label">منتج منخفض المخزون</div></div><div class="ico">⚠️</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(out)}</div><div class="label">منتج نافد</div></div><div class="ico">❌</div></div>
+    </div>
+    <div class="card"><h3>أرصدة المنتجات</h3>
+      ${rows.length ? `<table><tr><th>المنتج</th><th>رقم القطعة</th><th>المخزن / الرف</th><th>الكمية المتاحة</th><th>الحد الأدنى</th><th>الحالة</th></tr>
+      ${rows.sort((a, b) => (a.stock ?? 0) - (b.stock ?? 0)).map(({ p, stock }) => {
+        const status = stock === 0 ? '<span class="badge bad">نافد</span>'
+          : (Number(p.minStock || 0) > 0 && stock < Number(p.minStock)) ? '<span class="badge warn">منخفض</span>'
+          : '<span class="badge ok">متوفر</span>';
+        return `<tr><td>${esc(p.name_ar)}</td><td dir="ltr">${esc(p.partNumber || '—')}</td>
+        <td>${esc(p.warehouseLocation || '—')} / ${esc(p.shelfNumber || '—')}</td>
+        <td class="num">${stock === null ? 'غير مسجل' : fmtNum(stock)}</td>
+        <td class="num">${fmtNum(p.minStock || 0)}</td><td>${status}</td></tr>`;
+      }).join('')}</table>` : emptyState('لا توجد منتجات بعد — أضف منتجات من صفحة المنتجات.')}
+    </div>`;
+}
 function bindProductButtons() {
   document.querySelectorAll('[data-add-sale]').forEach((b) => b.addEventListener('click', () => {
     const p = productsCache.find((x) => x.id === b.dataset.addSale);
@@ -421,6 +657,14 @@ function bindProductButtons() {
   document.querySelectorAll('[data-edit-product]').forEach((b) => b.addEventListener('click', () => {
     const p = productsCache.find((x) => x.id === b.dataset.editProduct);
     if (p) openProductForm(p);
+  }));
+  document.querySelectorAll('[data-toggle-product]').forEach((b) => b.addEventListener('click', async () => {
+    // إيقاف/تفعيل فقط (إيقاف ناعم) — المنتج لا يُحذف أبداً حتى تبقى سجلات مبيعاته سليمة
+    const active = b.dataset.active === 'true';
+    if (!active && !confirm('سيتم إيقاف هذا المنتج — لن يظهر في البحث ونقطة البيع، لكن سجلاته ومبيعاته السابقة تبقى محفوظة. متابعة؟')) return;
+    await updateDoc(doc(db, 'products', b.dataset.toggleProduct), { isActive: !active, updatedAt: serverTimestamp() });
+    await loadProducts();
+    if (currentPage === 'products') await renderProducts();
   }));
 }
 
@@ -466,7 +710,7 @@ $('global-search').addEventListener('keydown', async (e) => {
   if (e.key !== 'Enter') return;
   await loadProducts();
   const list = await searchProducts(e.target.value);
-  if (list.length) { await go('inventory'); $('inv-search').value = e.target.value; $('inv-search').dispatchEvent(new Event('input')); }
+  if (list.length) { await go('products'); $('inv-search').value = e.target.value; $('inv-search').dispatchEvent(new Event('input')); }
   else alert('لا توجد نتائج مطابقة في Firestore.');
 });
 
@@ -482,7 +726,7 @@ async function handleScannedCode(code) {
   }
   if (found) {
     $('scan-result').innerHTML = '';
-    if (currentPage !== 'inventory') await go('inventory');
+    if (currentPage !== 'products') await go('products');
     $('products-grid').innerHTML = productCardHTML(found);
     bindProductButtons();
   } else {
@@ -502,6 +746,7 @@ function openProductForm(p = null, scannedCode = '') {
   $('product-modal-title').textContent = p ? 'تعديل منتج' : 'منتج جديد';
   $('pf-category').innerHTML = categories.map((c) => `<option value="${c.id}">${esc(c.name_ar)}</option>`).join('') || '<option value="">— لا توجد تصنيفات —</option>';
   $('pf-brand').innerHTML = brands.map((b) => `<option value="${b.id}">${esc(b.name_ar)}</option>`).join('') || '<option value="">—</option>';
+  $('pf-supplier').innerHTML = '<option value="">— بدون مورد —</option>' + suppliersCache.map((s) => `<option value="${s.id}">${esc(s.name_ar)}</option>`).join('');
   $('pf-name-ar').value = p?.name_ar || '';
   $('pf-name-en').value = p?.name_en || '';
   $('pf-part').value = p?.partNumber || scannedCode || '';
@@ -510,6 +755,13 @@ function openProductForm(p = null, scannedCode = '') {
   $('pf-qr').value = p?.qrCode || (!/^\d+$/.test(scannedCode) ? scannedCode : '');
   $('pf-category').value = p?.categoryId || '';
   $('pf-brand').value = p?.brandId || '';
+  $('pf-supplier').value = p?.supplierId || '';
+  $('pf-unit').value = p?.unit || 'قطعة';
+  $('pf-vehicles').value = (p?.vehicleCompatibility || []).join('\n');
+  // سعر الشراء يظهر فقط لمن لديه صلاحية رؤيته
+  const showBuy = canSeePrices();
+  $('pf-buy-label').style.display = showBuy ? '' : 'none';
+  $('pf-buy').style.display = showBuy ? '' : 'none';
   $('pf-buy').value = p ? (p.purchasePricePiasters || 0) / 100 : 0;
   $('pf-sell').value = p ? (p.sellingPricePiasters || 0) / 100 : 0;
   $('pf-wholesale').value = p ? (p.wholesalePricePiasters || 0) / 100 : 0;
@@ -523,25 +775,32 @@ function openProductForm(p = null, scannedCode = '') {
 $('product-cancel-btn').addEventListener('click', () => $('product-modal').classList.add('hidden'));
 $('product-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  // سعر الشراء لا يُكتب إلا ممن لديه صلاحية رؤيته — وإلا يبقى كما هو عند التعديل
+  const buyPrice = canSeePrices() ? toPiasters($('pf-buy').value)
+    : (editingProduct ? Number(editingProduct.purchasePricePiasters || 0) : 0);
   const data = {
     orgId, name_ar: $('pf-name-ar').value.trim(), name_en: $('pf-name-en').value.trim(),
     partNumber: $('pf-part').value.trim(),
     alternativeNumbers: $('pf-alt').value.split(',').map((s) => s.trim()).filter(Boolean),
     barcode: $('pf-barcode').value.trim(), qrCode: $('pf-qr').value.trim(),
     categoryId: $('pf-category').value, brandId: $('pf-brand').value,
-    purchasePricePiasters: toPiasters($('pf-buy').value),
+    supplierId: $('pf-supplier').value || null,
+    unit: $('pf-unit').value || 'قطعة',
+    vehicleCompatibility: $('pf-vehicles').value.split('\n').map((s) => s.trim()).filter(Boolean),
+    purchasePricePiasters: buyPrice,
     sellingPricePiasters: toPiasters($('pf-sell').value),
     wholesalePricePiasters: toPiasters($('pf-wholesale').value),
-    minStock: Number($('pf-min').value || 0), unit: 'piece',
+    minStock: Number($('pf-min').value || 0),
     warehouseLocation: $('pf-loc').value.trim(), shelfNumber: $('pf-shelf').value.trim(),
-    description_ar: $('pf-notes').value.trim(), isActive: true, updatedAt: serverTimestamp()
+    description_ar: $('pf-notes').value.trim(), isActive: editingProduct ? (editingProduct.isActive !== false) : true, updatedAt: serverTimestamp()
   };
   try {
     if (editingProduct) await updateDoc(doc(db, 'products', editingProduct.id), data);
     else await addDoc(collection(db, 'products'), { ...data, createdAt: serverTimestamp() });
     $('product-modal').classList.add('hidden');
     await loadProducts();
-    if (currentPage === 'inventory') await renderInventory();
+    if (currentPage === 'products') await renderProducts();
+    else if (currentPage === 'inventory') await renderInventory();
   } catch (err) { showError($('product-error'), firestoreErrorMessage(err)); }
 });
 
@@ -598,7 +857,7 @@ async function renderPOS() {
     document.querySelectorAll('[data-cart-del]').forEach((b) => b.addEventListener('click', () => { posCart.splice(Number(b.dataset.cartDel), 1); drawCart(); }));
   };
   const drawResults = async (q) => {
-    const list = (await searchProducts(q)).slice(0, 12);
+    const list = (await searchProducts(q)).filter((p) => p.isActive !== false).slice(0, 12);
     $('pos-results').innerHTML = list.length ? list.map((p) => `
       <div class="card"><b>${esc(p.name_ar)}</b><br><small dir="ltr">${esc(p.partNumber || '')}</small>
       <div class="list-row"><span>${fmtEGP(p.sellingPricePiasters)}</span><span>متاح: ${productStock(p) ?? '—'}</span></div>
@@ -896,3 +1155,92 @@ $('employee-form').addEventListener('submit', async (e) => {
     if (secondary) await deleteApp(secondary).catch(() => {});
   }
 });
+
+// ============================================================================
+// 13) المساعد الذكي — إجابات من بيانات Firestore الحقيقية (بدون خادم خارجي)
+// ============================================================================
+async function renderAI() {
+  $('page').innerHTML = `
+    <h2 class="page-title">🤖 المساعد الذكي</h2>
+    <p class="page-sub">اسأل عن مبيعاتك ومخزونك وعملائك — الإجابات محسوبة من Firestore مباشرة.</p>
+    <div class="card"><div class="ai-chat" id="ai-log">
+      <div class="ai-msg bot">أهلاً بك في مساعد الفلكي الذكي 👋 اسألني مثلاً: «ما إجمالي مبيعات اليوم؟» أو «ما المنتجات منخفضة المخزون؟» أو «ما أكثر المنتجات مبيعاً؟»</div>
+    </div>
+    <div class="ai-suggest" style="margin-top:14px">
+      <button class="btn small secondary" data-ai-q="ما إجمالي مبيعات اليوم؟">مبيعات اليوم</button>
+      <button class="btn small secondary" data-ai-q="ما المنتجات منخفضة المخزون؟">المخزون المنخفض</button>
+      <button class="btn small secondary" data-ai-q="ما أكثر المنتجات مبيعاً؟">الأكثر مبيعاً</button>
+      <button class="btn small secondary" data-ai-q="ما صافي الربح؟">صافي الربح</button>
+      <button class="btn small secondary" data-ai-q="كم عدد العملاء النشطين؟">العملاء</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <input id="ai-input" placeholder="اكتب سؤالك هنا...">
+      <button class="btn small" id="ai-send" style="margin-top:0">إرسال</button>
+    </div></div>`;
+  const ask = async (q) => {
+    const log = $('ai-log');
+    log.innerHTML += `<div class="ai-msg user">${esc(q)}</div>`;
+    log.innerHTML += `<div class="ai-msg bot">جارٍ الحساب من Firestore...</div>`;
+    const answer = await answerAI(q);
+    log.querySelectorAll('.ai-msg.bot').item(log.querySelectorAll('.ai-msg.bot').length - 1).textContent = answer;
+    log.scrollTop = log.scrollHeight;
+  };
+  document.querySelectorAll('[data-ai-q]').forEach((b) => b.addEventListener('click', () => ask(b.dataset.aiQ)));
+  $('ai-send').addEventListener('click', () => { const v = $('ai-input').value.trim(); if (v) { $('ai-input').value = ''; ask(v); } });
+  $('ai-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('ai-send').click(); });
+}
+async function answerAI(q) {
+  const [sales, customers] = await Promise.all([loadCollection('salesInvoices'), loadCollection('customers')]);
+  await loadProducts();
+  const posted = sales.filter((s) => s.status === 'posted');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todaySales = posted.filter((s) => tsToDate(s.date || s.createdAt) >= today)
+    .reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
+  const totalSales = posted.reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
+  const low = productsCache.filter((p) => { const st = productStock(p); return st !== null && Number(p.minStock || 0) > 0 && st < Number(p.minStock); });
+  const active = customers.filter((c) => c.isActive !== false).length;
+  if (/مبيعات اليوم|مبيعات النهاردة|بيع.*اليوم/.test(q)) return `مبيعات اليوم: ${fmtEGP(todaySales)} (${posted.filter((s) => tsToDate(s.date || s.createdAt) >= today).length} فاتورة منشورة).`;
+  if (/ربح/.test(q)) {
+    let cogs = 0;
+    for (const inv of posted.slice(0, 60)) {
+      const items = await getDocs(collection(db, 'salesInvoices', inv.id, 'items'));
+      items.forEach((it) => { const d = it.data(); cogs += Number(d.costPricePiasters || 0) * Number(d.quantity || 0); });
+    }
+    return `صافي الربح الإجمالي (من آخر 60 فاتورة): ${fmtEGP(totalSales - cogs)} — الإيراد ${fmtEGP(totalSales)} ناقص تكلفة البضاعة ${fmtEGP(cogs)}.`;
+  }
+  if (/منخفض|ناقص|مخزون/.test(q)) {
+    if (!low.length) return 'لا توجد منتجات منخفضة المخزون حالياً — كل المنتجات فوق حد إعادة الطلب.';
+    return `يوجد ${low.length} منتج منخفض المخزون:\n` + low.slice(0, 8).map((p) => `• ${p.name_ar} — متبقي ${fmtNum(productStock(p))} / حد ${fmtNum(p.minStock)}`).join('\n');
+  }
+  if (/الأكثر مبيعاً|أكثر.*مبيع|أفضل/.test(q)) {
+    const sold = {};
+    for (const inv of posted.slice(0, 60)) {
+      const items = await getDocs(collection(db, 'salesInvoices', inv.id, 'items'));
+      items.forEach((it) => { const d = it.data(); sold[d.productId] = (sold[d.productId] || 0) + Number(d.quantity || 0); });
+    }
+    const top = Object.entries(sold).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    if (!top.length) return 'لا توجد مبيعات مسجلة بعد لأحدد الأكثر مبيعاً.';
+    const byId = Object.fromEntries(productsCache.map((p) => [p.id, p]));
+    return 'أكثر المنتجات مبيعاً:\n' + top.map(([pid, qty], i) => `${i + 1}. ${(byId[pid] || {}).name_ar || pid} — ${fmtNum(qty)} قطعة`).join('\n');
+  }
+  if (/عملاء|عميل/.test(q)) return `عدد العملاء النشطين: ${active} من أصل ${customers.length} عميل مسجل.`;
+  if (/مبيعات/.test(q)) return `إجمالي المبيعات المنشورة: ${fmtEGP(totalSales)} (${posted.length} فاتورة)، منها مبيعات اليوم ${fmtEGP(todaySales)}.`;
+  return 'أستطيع الإجابة عن: مبيعات اليوم والإجمالي، صافي الربح، المنتجات منخفضة المخزون، أكثر المنتجات مبيعاً، وعدد العملاء النشطين — جرّب أحد هذه الأسئلة.';
+}
+
+// ============================================================================
+// 14) المساعدة والدعم
+// ============================================================================
+async function renderHelp() {
+  $('page').innerHTML = `
+    <h2 class="page-title">❓ المساعدة والدعم</h2>
+    <p class="page-sub">دليل سريع لاستخدام نظام الفلكي.</p>
+    <div class="grid-2">
+      <div class="card"><h3>🔐 الدخول</h3><p style="line-height:1.9">الدخول بإيميل وكلمة مرور حسابك في Firebase Auth. التسجيل العام مغلق — الحسابات ينشئها المالك فقط من إدارة الموظفين. كلمة مرور فتح الواجهة موجودة في نسخة التطبيق الكاملة فقط.</p></div>
+      <div class="card"><h3>📷 البحث بالكاميرا</h3><p style="line-height:1.9">من أي صفحة: اضغط «📷 مسح» ووجّه الكاميرا لباركود أو QR القطعة، وستظهر بطاقتها كاملة (الاسم، رقم القطعة، السعر، المخزون، المخزن، المورد) مع «إضافة للبيع» و«تعديل». وإن لم تعمل الكاميرا أدخل الكود يدوياً.</p></div>
+      <div class="card"><h3>🛒 نقطة البيع</h3><p style="line-height:1.9">أضف المنتجات بالبحث أو المسح، اختر العميل وطريقة الدفع، ثم «تأكيد البيع». تُحفظ الفاتورة مع بنودها وحركات المخزون في Firestore. الفاتورة المنشورة لا تُحذف — الإلغاء يكون بعكسها من التطبيق الكامل.</p></div>
+      <div class="card"><h3>📦 المنتجات والمخزون</h3><p style="line-height:1.9">صفحة «المنتجات» هي الكتالوج الكامل: إضافة وتعديل وإيقاف/تفعيل حسب صلاحيتك. وصفحة «المخزون» تعرض الأرصدة وحالتها (متوفر/منخفض/نافد) وقيمة المخزون.</p></div>
+      <div class="card"><h3>👤 الموظفون</h3><p style="line-height:1.9">المالك فقط ينشئ حسابات الموظفين ويحدد واجهاتهم وصلاحياتهم من صفحة إدارة الموظفين، ويفعّل أو يوقف أي حساب في أي وقت — وسجلات الموظف السابقة تبقى محفوظة دائماً.</p></div>
+      <div class="card"><h3>🔥 البيانات</h3><p style="line-height:1.9">كل البيانات في مشروع Firebase «al-falaky-erp» (Firestore في eur3) وتظهر الأرقام من استعلامات حية. عند ظهور خطأ صلاحيات، فحسابك يحتاج تصاريح (orgId / role / branchIds) يضبطها المالك.</p></div>
+    </div>`;
+}

@@ -33,30 +33,64 @@
 
 <!-- ================= التطبيق بعد الدخول ================= -->
 <div id="app" class="hidden">
-  <aside class="sidebar">
-    <div class="brand">
-      <div class="logo-mark">🚗</div>
-      <h2>الفلكي لقطع غيار السيارات</h2>
-      <small>Al-Falaky Auto Spare Parts</small>
-    </div>
-    <nav id="main-nav"><!-- تُبنى من app.js حسب صلاحيات المستخدم --></nav>
-    <div style="flex:1"></div>
-    <button class="nav-item" id="logout-btn"><span class="ico">🚪</span> تسجيل الخروج</button>
-  </aside>
-
-  <div class="main">
-    <header class="topbar">
-      <div class="search-box">
-        <input id="global-search" type="search" placeholder="ابحث عن منتج، رقم قطعة، أو سيارة...">
-        <button class="btn scan small" id="scan-btn-top" title="مسح باركود / QR بالكاميرا">📷 مسح</button>
+  <!-- الهيدر العلوي — بعرض الصفحة كاملاً -->
+  <header class="topbar">
+    <div class="topbar-right">
+      <button class="icon-btn" id="menu-btn" title="القائمة">☰</button>
+      <div class="brand-block">
+        <div class="brand-car" aria-hidden="true">
+          <svg viewBox="0 0 120 44" width="86" height="32" fill="none">
+            <path d="M8 34 L14 22 Q16 18 22 17 L34 15 Q44 6 58 5 L78 5 Q90 6 98 14 L106 16 Q114 18 115 24 L115 30 Q115 34 110 34 L104 34 A9 9 0 0 0 86 34 L44 34 A9 9 0 0 0 26 34 L14 34 Q8 34 8 30 Z" fill="#2f81f7" opacity="0.9"/>
+            <path d="M38 15 L48 8 L72 8 L84 15 Z" fill="#bcd6ff"/>
+            <circle cx="35" cy="34" r="8" fill="#0a1628" stroke="#58a6ff" stroke-width="2"/>
+            <circle cx="95" cy="34" r="8" fill="#0a1628" stroke="#58a6ff" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>الفلكي لقطع غيار السيارات</h1>
+          <small dir="ltr">Al-Falaky Auto Spare Parts</small>
+        </div>
       </div>
-      <span class="badge" id="conn-badge">⏳ جارٍ الاتصال بـ Firestore...</span>
-      <div class="user-chip"><span class="avatar" id="user-avatar">؟</span><span id="user-name">—</span></div>
-    </header>
+    </div>
+    <div class="search-box">
+      <span class="search-ico">🔍</span>
+      <input id="global-search" type="search" placeholder="ابحث عن منتج، رقم قطعة أو سيارة...">
+      <button class="btn scan small" id="scan-btn-top" title="مسح باركود / QR بالكاميرا">📷 مسح</button>
+    </div>
+    <div class="topbar-left">
+      <button class="lang-btn" id="lang-btn" title="English">English 🌐</button>
+      <button class="icon-btn" id="settings-btn" title="الإعدادات">⚙️</button>
+      <div class="bell-wrap">
+        <button class="icon-btn" id="bell-btn" title="التنبيهات">🔔<span id="bell-badge" class="bell-badge hidden">0</span></button>
+        <div id="notif-dropdown" class="notif-dropdown hidden"></div>
+      </div>
+      <div class="user-chip"><span class="avatar" id="user-avatar">؟</span><span class="user-meta"><b id="user-name">—</b><small id="user-role">—</small></span></div>
+    </div>
+  </header>
 
-    <main class="content" id="page"><!-- تُملأ من app.js --></main>
+  <div class="shell">
+    <!-- القائمة الجانبية — يمين -->
+    <aside class="sidebar" id="sidebar">
+      <nav id="main-nav"><!-- تُبنى من app.js حسب صلاحيات المستخدم --></nav>
+      <div class="ai-box">
+        <div class="ai-robot">🤖</div>
+        <h3>المساعد الذكي</h3>
+        <p>اسأل عن أي شيء...</p>
+        <button class="btn ai-start" id="ai-start-btn" type="button">💬 بدء المحادثة</button>
+      </div>
+      <div style="flex:1"></div>
+      <button class="nav-item" id="logout-btn"><span class="ico">🚪</span> تسجيل الخروج</button>
+    </aside>
 
-    <footer>نظام الفلكي لإدارة قطع غيار السيارات — v1.0.0 | البيانات من Firestore مباشرة | معاً.. نحو مستقبل أفضل</footer>
+    <div class="main">
+      <main class="content" id="page"><!-- تُملأ من app.js --></main>
+
+      <footer class="app-footer">
+        <span class="foot-right">v1.0.0 | نظام الفلكي لإدارة قطع غيار السيارات</span>
+        <span class="foot-center"><span class="conn-dot">●</span> <span id="foot-conn">متصل بالإنترنت</span> &nbsp;🕐 <span id="live-clock">—</span></span>
+        <span class="foot-left">معاً .. نحو مستقبل أفضل</span>
+      </footer>
+    </div>
   </div>
 </div>
 
@@ -90,7 +124,10 @@
       <label>رمز QR</label><input id="pf-qr" dir="ltr">
       <label>التصنيف</label><select id="pf-category"></select>
       <label>العلامة التجارية</label><select id="pf-brand"></select>
-      <label>سعر الشراء (جنيه)</label><input id="pf-buy" type="number" step="0.01" min="0" value="0">
+      <label>المورد</label><select id="pf-supplier"></select>
+      <label>الوحدة</label><select id="pf-unit"><option value="قطعة">قطعة</option><option value="علبة">علبة</option><option value="طقم">طقم</option><option value="لتر">لتر</option><option value="متر">متر</option><option value="كيلو">كيلو</option></select>
+      <label>توافق السيارات (سطر لكل سيارة — مثال: تويوتا كورولا 2015-2020 1.6)</label><textarea id="pf-vehicles" rows="2" placeholder="تويوتا كورولا 2015-2020 1.6"></textarea>
+      <label id="pf-buy-label">سعر الشراء (جنيه)</label><input id="pf-buy" type="number" step="0.01" min="0" value="0">
       <label>سعر البيع (جنيه) *</label><input id="pf-sell" type="number" step="0.01" min="0" required value="0">
       <label>سعر الجملة (جنيه)</label><input id="pf-wholesale" type="number" step="0.01" min="0" value="0">
       <label>حد إعادة الطلب (أقل مخزون)</label><input id="pf-min" type="number" min="0" value="0">
