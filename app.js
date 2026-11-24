@@ -90,6 +90,8 @@ function categoryIcon(catId) {
 }
 const toPiasters = (egp) => Math.round(Number(egp || 0) * 100);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// شارة «تجريبي» لأي مستند مُعلَّم isDemo:true في Firestore
+const demoBadge = (d) => (d && d.isDemo) ? ' <span class="badge demo">🧪 تجريبي</span>' : '';
 const tsToDate = (t) => (t && t.toDate) ? t.toDate() : (t instanceof Date ? t : new Date(t));
 function showError(el, msg) { el.textContent = msg; el.classList.add('show'); }
 function hideError(el) { el.textContent = ''; el.classList.remove('show'); }
@@ -360,10 +362,15 @@ async function renderDashboard() {
   const profit = totalSales - cogs;
   const profitCur = salesCur - (cogsByMonth[monthKey(now)] || 0);
   const profitPrev = salesPrev - (cogsByMonth[monthKey(prevMonth)] || 0);
-  // قيمة المخزون = مجموع (الرصيد × سعر الشراء)
+  // قيمة المخزون = مجموع (الرصيد × سعر الشراء) للمنتجات النشطة فقط —
+  // بعد تنظيف البيانات التجريبية (إيقاف منتجاتها) تختفي قيمتها من هنا،
+  // لأن أرصدة stockBalances نفسها لا تُكتب من العميل أبداً.
   const prodById = Object.fromEntries(productsCache.map((p) => [p.id, p]));
-  const inventoryValue = bals.reduce((a, b) =>
-    a + Number(b.quantity || 0) * Number((prodById[b.productId] || {}).purchasePricePiasters || 0), 0);
+  const inventoryValue = bals.reduce((a, b) => {
+    const pr = prodById[b.productId] || {};
+    if (pr.isActive === false) return a;
+    return a + Number(b.quantity || 0) * Number(pr.purchasePricePiasters || 0);
+  }, 0);
   const activeCustomers = customers.filter((c) => c.isActive !== false).length;
 
   // أكثر المنتجات مبيعاً (من بنود آخر 60 فاتورة)
@@ -376,12 +383,14 @@ async function renderDashboard() {
     .map(([pid, qty], i) => ({ rank: i + 1, name: (prodById[pid] || {}).name_ar || pid,
       categoryId: (prodById[pid] || {}).categoryId, partNumber: (prodById[pid] || {}).partNumber || '', qty }));
 
-  // تنبيهات المخزون المنخفض
+  // تنبيهات المخزون المنخفض — المنتجات النشطة فقط (الموقوفة لا تُنبَّه عنها)
   const lowStock = productsCache.filter((p) => {
+    if (p.isActive === false) return false;
     const q = productStock(p); return q !== null && Number(p.minStock || 0) > 0 && q < Number(p.minStock);
   });
-  const outStock = productsCache.filter((p) => productStock(p) === 0);
-  const inStockPct = productsCache.length ? Math.round(100 * productsCache.filter((p) => (productStock(p) ?? 0) > 0).length / productsCache.length) : 0;
+  const outStock = productsCache.filter((p) => p.isActive !== false && productStock(p) === 0);
+  const activeProducts = productsCache.filter((p) => p.isActive !== false);
+  const inStockPct = activeProducts.length ? Math.round(100 * activeProducts.filter((p) => (productStock(p) ?? 0) > 0).length / activeProducts.length) : 0;
 
   // التنبيهات — من بيانات Firestore الحقيقية فقط
   const alerts = [];
@@ -423,11 +432,11 @@ async function renderDashboard() {
   const branchLabels = Object.keys(branchTotals).map(branchName);
   const branchValues = Object.values(branchTotals).map((v) => v / 100);
 
-  const hasAny = posted.length || postedPurchases.length || productsCache.length;
+  const hasAny = posted.length || postedPurchases.length || productsCache.some((p) => p.isActive !== false);
   const dSales = pctDelta(salesCur, salesPrev);
   const dPurch = pctDelta(purchCur, purchPrev);
   const dProfit = pctDelta(profitCur, profitPrev);
-  const hasProducts = productsCache.length > 0;
+  const hasProducts = activeProducts.length > 0;
   const ringC = 2 * Math.PI * 52;
   const ringColor = !hasProducts ? '#8b98a9' : inStockPct >= 80 ? '#3fb950' : inStockPct >= 50 ? '#f0883e' : '#f85149';
   const stockStatus = !hasProducts ? { text: 'لا توجد منتجات بعد', cls: 'flat' } : inStockPct >= 80 ? { text: 'مخزون آمن ✓', cls: 'ok' } : inStockPct >= 50 ? { text: 'مخزون يحتاج متابعة', cls: 'warn' } : { text: 'مخزون حرج — راجع المشتريات', cls: 'bad' };
@@ -588,7 +597,7 @@ function productCardHTML(p) {
   const inactive = p.isActive === false;
   const vehicles = (p.vehicleCompatibility || []).slice(0, 2);
   return `<div class="card" ${inactive ? 'style="opacity:.6"' : ''}>
-    <h3>${esc(p.name_ar)} ${p.name_en ? `<small style="color:var(--muted)">(${esc(p.name_en)})</small>` : ''} ${inactive ? '<span class="badge bad">موقوف</span>' : ''}</h3>
+    <h3>${esc(p.name_ar)} ${p.name_en ? `<small style="color:var(--muted)">(${esc(p.name_en)})</small>` : ''} ${inactive ? '<span class="badge bad">موقوف</span>' : ''}${demoBadge(p)}</h3>
     <div class="list-row"><span>رقم القطعة</span><b dir="ltr">${esc(p.partNumber || '—')}</b></div>
     <div class="list-row"><span>الباركود / QR</span><b dir="ltr">${esc(p.barcode || p.qrCode || '—')}</b></div>
     <div class="list-row"><span>سعر البيع</span><b>${fmtEGP(p.sellingPricePiasters)}</b></div>
@@ -617,6 +626,15 @@ async function renderProducts() {
       <button class="btn scan small" id="scan-btn-inv">📷 بحث بالكاميرا</button>
       <button class="btn small" id="add-product-btn">➕ منتج جديد</button>
     </div>
+    ${isOwner() ? `<div class="card" id="demo-cleanup-box" style="margin-bottom:14px;border-color:rgba(240,176,0,.45)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div><h3 style="margin-bottom:4px">🧹 البيانات التجريبية</h3>
+        <p class="note" style="text-align:right;margin:0">إخفاء كل البيانات المعلَّمة «تجريبي» دفعة واحدة: إيقاف المنتجات التجريبية وإلغاء فواتيرها وإيقاف عملائها ومورديها.</p></div>
+        <button class="btn danger" id="demo-cleanup-btn" style="width:auto">🗑️ حذف البيانات التجريبية</button>
+      </div>
+      <p class="note" style="text-align:right">الحذف النهائي من قاعدة البيانات يتم من لوحة المالك (Admin) عند الطلب — هذا الزر يخفي البيانات التجريبية ويلغي فواتيرها.</p>
+      <div id="demo-cleanup-result"></div>
+    </div>` : ''}
     <div class="grid-3" id="products-grid"></div>`;
   const draw = async (q) => {
     const list = await searchProducts(q);
@@ -626,6 +644,8 @@ async function renderProducts() {
   $('inv-search').addEventListener('input', (e) => draw(e.target.value));
   $('scan-btn-inv').addEventListener('click', openScanner);
   $('add-product-btn').addEventListener('click', () => openProductForm());
+  const cleanupBtn = $('demo-cleanup-btn');
+  if (cleanupBtn) cleanupBtn.addEventListener('click', cleanupDemoData);
   await draw('');
 }
 
@@ -656,7 +676,7 @@ async function renderInventory() {
         const status = stock === 0 ? '<span class="badge bad">نافد</span>'
           : (Number(p.minStock || 0) > 0 && stock < Number(p.minStock)) ? '<span class="badge warn">منخفض</span>'
           : '<span class="badge ok">متوفر</span>';
-        return `<tr><td>${esc(p.name_ar)}</td><td dir="ltr">${esc(p.partNumber || '—')}</td>
+        return `<tr><td>${esc(p.name_ar)}${demoBadge(p)}</td><td dir="ltr">${esc(p.partNumber || '—')}</td>
         <td>${esc(p.warehouseLocation || '—')} / ${esc(p.shelfNumber || '—')}</td>
         <td class="num">${stock === null ? 'غير مسجل' : fmtNum(stock)}</td>
         <td class="num">${fmtNum(p.minStock || 0)}</td><td>${status}</td></tr>`;
@@ -680,6 +700,55 @@ function bindProductButtons() {
     await loadProducts();
     if (currentPage === 'products') await renderProducts();
   }));
+}
+
+// --- حذف البيانات التجريبية (تنظيف ناعم — قواعد Firestore تمنع الحذف من العميل) ---
+// ما يفعله: إيقاف المنتجات التجريبية (isActive=false) + إلغاء فواتير المبيعات
+// والمشتريات التجريبية المنشورة (status='cancelled' عبر isReversalOnly في القواعد)
+// + إيقاف العملاء والموردين التجريبيين. ما لا يفعله: لا يحذف أي مستند نهائياً،
+// ولا يمس stockBalances (لا تُكتب من العميل أبداً) — قيمتها تختفي من لوحة التحكم
+// لأن منتجاتها أصبحت موقوفة (انظر فلتر isActive في renderDashboard).
+async function cleanupDemoData() {
+  if (!isOwner()) { alert('هذه العملية للمالك فقط.'); return; }
+  if (!confirm('سيتم إخفاء كل البيانات التجريبية:\n• إيقاف المنتجات المعلَّمة «تجريبي»\n• إلغاء فواتير المبيعات والمشتريات التجريبية المنشورة\n• إيقاف العملاء والموردين التجريبيين\n\nلن تُحذف أي بيانات نهائياً من قاعدة البيانات (القواعد تمنع الحذف من العميل) — وستعود لوحة التحكم لحالاتها الفارغة. متابعة؟')) return;
+  const btn = $('demo-cleanup-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ جارٍ التنظيف...'; }
+  const res = { products: 0, sales: 0, purchases: 0, contacts: 0, failed: [] };
+  const fail = (label, err) => res.failed.push(`${label}: ${err && err.code ? err.code : (err && err.message) || err}`);
+  try {
+    const demoProducts = (await loadCollection('products', [['isDemo', '==', true]])).filter((p) => p.isActive !== false);
+    for (const p of demoProducts) {
+      try { await updateDoc(doc(db, 'products', p.id), { isActive: false, updatedAt: serverTimestamp() }); res.products++; }
+      catch (e) { fail(`منتج ${p.name_ar || p.id}`, e); }
+    }
+    const demoSales = (await loadCollection('salesInvoices', [['isDemo', '==', true]])).filter((s) => s.status === 'posted');
+    for (const s of demoSales) {
+      try { await updateDoc(doc(db, 'salesInvoices', s.id), { status: 'cancelled', updatedAt: serverTimestamp() }); res.sales++; }
+      catch (e) { fail(`فاتورة مبيعات ${s.invoiceNumber || s.id}`, e); }
+    }
+    const demoPurch = (await loadCollection('purchaseInvoices', [['isDemo', '==', true]])).filter((s) => s.status === 'posted');
+    for (const s of demoPurch) {
+      try { await updateDoc(doc(db, 'purchaseInvoices', s.id), { status: 'cancelled', updatedAt: serverTimestamp() }); res.purchases++; }
+      catch (e) { fail(`فاتورة مشتريات ${s.invoiceNumber || s.id}`, e); }
+    }
+    for (const coll of ['customers', 'suppliers']) {
+      const demoContacts = (await loadCollection(coll, [['isDemo', '==', true]])).filter((c) => c.isActive !== false);
+      for (const c of demoContacts) {
+        try { await updateDoc(doc(db, coll, c.id), { isActive: false, updatedAt: serverTimestamp() }); res.contacts++; }
+        catch (e) { fail(`${coll === 'customers' ? 'عميل' : 'مورد'} ${c.name_ar || c.id}`, e); }
+      }
+    }
+  } catch (e) { fail('قراءة البيانات التجريبية', e); }
+  const lines = [`تم التنظيف: إيقاف ${res.products} منتج، إلغاء ${res.sales} فاتورة مبيعات، إلغاء ${res.purchases} فاتورة مشتريات، إيقاف ${res.contacts} عميل/مورد.`];
+  if (res.failed.length) lines.push(`تعذّر تنفيذ ${res.failed.length} عنصر (القواعد منعته): ` + res.failed.slice(0, 5).join('؛ ') + (res.failed.length > 5 ? '…' : ''));
+  lines.push('ملاحظة: أرصدة stockBalances لا تُكتب من العميل، فقيمتها تختفي من لوحة التحكم لأن منتجاتها أصبحت موقوفة. الحذف النهائي من قاعدة البيانات يتم من لوحة المالك (Admin) عند الطلب.');
+  const box = $('demo-cleanup-result');
+  if (box) box.innerHTML = `<div class="note" style="text-align:right;color:var(--text)">${lines.map((l) => esc(l)).join('<br>')}</div>`;
+  else alert(lines.join('\n'));
+  await loadProducts();
+  if (currentPage === 'products') await renderProducts();
+  else if (currentPage === 'sales') await renderPOS();
+  else await go(currentPage);
 }
 
 // --- المسح بالكاميرا: BarcodeDetector + fallback يدوي ---
@@ -834,6 +903,15 @@ async function renderPOS() {
   $('page').innerHTML = `
     <h2 class="page-title">🛒 نقطة البيع (POS)</h2>
     <p class="page-sub">أضف المنتجات بالبحث أو بالمسح — الفاتورة تُحفظ في Firestore مع حركات مخزون موثقة.</p>
+    ${isOwner() ? `<div class="card" id="demo-cleanup-box" style="margin-bottom:14px;border-color:rgba(240,176,0,.45)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div><h3 style="margin-bottom:4px">🧹 البيانات التجريبية</h3>
+        <p class="note" style="text-align:right;margin:0">إخفاء كل البيانات المعلَّمة «تجريبي» دفعة واحدة: إيقاف المنتجات التجريبية وإلغاء فواتيرها وإيقاف عملائها ومورديها.</p></div>
+        <button class="btn danger" id="demo-cleanup-btn" style="width:auto">🗑️ حذف البيانات التجريبية</button>
+      </div>
+      <p class="note" style="text-align:right">الحذف النهائي من قاعدة البيانات يتم من لوحة المالك (Admin) عند الطلب — هذا الزر يخفي البيانات التجريبية ويلغي فواتيرها.</p>
+      <div id="demo-cleanup-result"></div>
+    </div>` : ''}
     <div class="pos-layout">
       <div class="card">
         <div class="toolbar">
@@ -873,7 +951,7 @@ async function renderPOS() {
   const drawResults = async (q) => {
     const list = (await searchProducts(q)).filter((p) => p.isActive !== false).slice(0, 12);
     $('pos-results').innerHTML = list.length ? list.map((p) => `
-      <div class="card"><b>${esc(p.name_ar)}</b><br><small dir="ltr">${esc(p.partNumber || '')}</small>
+      <div class="card"><b>${esc(p.name_ar)}</b>${demoBadge(p)}<br><small dir="ltr">${esc(p.partNumber || '')}</small>
       <div class="list-row"><span>${fmtEGP(p.sellingPricePiasters)}</span><span>متاح: ${productStock(p) ?? '—'}</span></div>
       <button class="btn small" data-pos-add="${p.id}">➕ إضافة</button></div>`).join('')
       : emptyState('لا نتائج — جرّب كوداً آخر أو امسح الباركود.');
@@ -884,6 +962,8 @@ async function renderPOS() {
   $('pos-search').addEventListener('input', (e) => drawResults(e.target.value));
   $('scan-btn-pos').addEventListener('click', openScanner);
   $('pos-clear').addEventListener('click', () => { posCart = []; drawCart(); });
+  const posCleanupBtn = $('demo-cleanup-btn');
+  if (posCleanupBtn) posCleanupBtn.addEventListener('click', cleanupDemoData);
   $('pos-checkout').addEventListener('click', async () => {
     hideError($('pos-error'));
     if (!posCart.length) { showError($('pos-error'), 'السلة فارغة.'); return; }
@@ -939,7 +1019,7 @@ async function renderPurchases() {
     <p class="page-sub">فواتير الشراء المنشورة في Firestore. إضافة فاتورة شراء جديدة تتم من التطبيق الكامل؛ هنا تُعرض الفواتير وأرصدة الموردين.</p>
     ${list.length ? `<div class="card"><table><tr><th>رقم الفاتورة</th><th>المورد</th><th>الحالة</th><th>الإجمالي</th><th>المتبقي</th><th>التاريخ</th></tr>
       ${list.sort((a, b) => tsToDate(b.createdAt) - tsToDate(a.createdAt)).map((p) => `
-      <tr><td dir="ltr">${esc(p.invoiceNumber || p.id)}</td><td>${esc(supName(p.supplierId))}</td>
+      <tr><td dir="ltr">${esc(p.invoiceNumber || p.id)}${demoBadge(p)}</td><td>${esc(supName(p.supplierId))}</td>
       <td><span class="badge ${p.status === 'posted' ? 'ok' : 'warn'}">${esc(p.status || '')}</span></td>
       <td class="num">${fmtEGP(p.totalPiasters)}</td><td class="num">${fmtEGP(p.remainingPiasters)}</td>
       <td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td></tr>`).join('')}</table></div>`
@@ -1008,7 +1088,7 @@ async function renderContacts(kind) {
     <div class="toolbar"><button class="btn small" id="add-contact-btn">➕ ${isCust ? 'عميل جديد' : 'مورد جديد'}</button></div>
     <div class="card">
     ${list.length ? `<table><tr><th>الاسم</th><th>الهاتف</th><th>الرصيد الحالي</th><th>الحالة</th></tr>
-      ${list.map((c) => `<tr><td>${esc(c.name_ar)}</td><td dir="ltr">${esc(c.phone || '')}</td>
+      ${list.map((c) => `<tr><td>${esc(c.name_ar)}${demoBadge(c)}</td><td dir="ltr">${esc(c.phone || '')}</td>
       <td class="num">${fmtEGP(c.currentBalancePiasters)}</td>
       <td><span class="badge ${c.isActive === false ? 'bad' : 'ok'}">${c.isActive === false ? 'موقوف' : 'نشط'}</span></td></tr>`).join('')}</table>`
     : emptyState(isCust ? 'لا يوجد عملاء مسجلون بعد.' : 'لا يوجد موردون مسجلون بعد.')}</div>`;
