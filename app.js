@@ -70,6 +70,32 @@ function shares100(values) {
   for (let k = 0; k < left; k++) base[order[k % order.length][1]]++;
   return base;
 }
+// عدّادات فخمة: عدّ تصاعدي لقيم KPI عند أول عرض للوحة (القيم النهائية لا تتغير أبداً)
+let kpiCountUpDone = false;
+function animateKpiCountUps() {
+  if (kpiCountUpDone) return;
+  kpiCountUpDone = true;
+  const els = document.querySelectorAll('.kpi .value[data-countup]');
+  if (!els.length) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; // القيم النهائية معروضة أصلاً في القالب
+  els.forEach((el) => {
+    const target = Number(el.dataset.countup || 0);
+    const kind = el.dataset.countupFmt || 'egp';
+    const textNode = Array.from(el.childNodes).find((n) => n.nodeType === Node.TEXT_NODE);
+    if (!textNode) return;
+    const format = (v) => kind === 'egp' ? fmtEGPNum(v) : kind === 'int-en' ? Math.round(v).toLocaleString('en-US') : fmtNum(v);
+    const dur = 900;
+    const t0 = performance.now();
+    const tick = (now) => {
+      const p = Math.min((now - t0) / dur, 1);
+      const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic
+      textNode.nodeValue = format(target * eased);
+      if (p < 1) requestAnimationFrame(tick);
+      else textNode.nodeValue = format(target); // القيمة النهائية بالظبط
+    };
+    requestAnimationFrame(tick);
+  });
+}
 // نسبة التغير بين الشهر الحالي والشهر السابق (من بيانات Firestore الحقيقية)
 function pctDelta(cur, prev) {
   if (!prev || Number(prev) === 0) return { text: '—', cls: 'flat' };
@@ -476,11 +502,11 @@ async function renderDashboard() {
   $('page').innerHTML = `
     <div class="hero">${heroArt}<div class="hero-text"><h2>إدارة أذكى .. لعمل أكثر نجاحاً</h2><p>مع نظام الفلكي المتكامل لقطع غيار السيارات — كل الأرقام أدناه من قاعدة بيانات Firestore مباشرة.</p></div></div>
     <div class="kpi-grid">
-      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(inventoryValue)}<span class="unit">ج.م</span></div><div class="label">قيمة المخزون الإجمالية</div><div class="delta flat">—</div></div><div class="ico">📦</div></div>
-      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(totalPurchases)}<span class="unit">ج.م</span></div><div class="label">إجمالي المشتريات</div><div class="delta ${dPurch.cls}">${dPurch.text}</div></div><div class="ico">🤝</div></div>
-      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(totalSales)}<span class="unit">ج.م</span></div><div class="label">إجمالي المبيعات</div><div class="delta ${dSales.cls}">${dSales.text}</div></div><div class="ico">🛒</div></div>
-      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(profit)}<span class="unit">ج.م</span></div><div class="label">صافي الربح</div><div class="delta ${dProfit.cls}">${dProfit.text}</div></div><div class="ico">📈</div></div>
-      <div class="card kpi"><div class="kpi-text"><div class="value">${Number(activeCustomers).toLocaleString('en-US')}</div><div class="label">عملاء نشطين</div><div class="delta flat">—</div></div><div class="ico">👥</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value" data-countup="${inventoryValue}" data-countup-fmt="egp">${fmtEGPNum(inventoryValue)}<span class="unit">ج.م</span></div><div class="label">قيمة المخزون الإجمالية</div><div class="delta flat">—</div></div><div class="ico">📦</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value" data-countup="${totalPurchases}" data-countup-fmt="egp">${fmtEGPNum(totalPurchases)}<span class="unit">ج.م</span></div><div class="label">إجمالي المشتريات</div><div class="delta ${dPurch.cls}">${dPurch.text}</div></div><div class="ico">🤝</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value" data-countup="${totalSales}" data-countup-fmt="egp">${fmtEGPNum(totalSales)}<span class="unit">ج.م</span></div><div class="label">إجمالي المبيعات</div><div class="delta ${dSales.cls}">${dSales.text}</div></div><div class="ico">🛒</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value" data-countup="${profit}" data-countup-fmt="egp">${fmtEGPNum(profit)}<span class="unit">ج.م</span></div><div class="label">صافي الربح</div><div class="delta ${dProfit.cls}">${dProfit.text}</div></div><div class="ico">📈</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value" data-countup="${activeCustomers}" data-countup-fmt="int-en">${Number(activeCustomers).toLocaleString('en-US')}</div><div class="label">عملاء نشطين</div><div class="delta flat">—</div></div><div class="ico">👥</div></div>
     </div>
     ${hasAny ? '' : `<div class="card">${emptyState('لا توجد بيانات بعد في Firestore — أنشئ منتجات وفواتير من صفحتي المنتجات والمبيعات، وستظهر المؤشرات هنا تلقائياً.')}</div>`}
     <div class="dash-row2">
@@ -531,6 +557,7 @@ async function renderDashboard() {
     if (more) { more.classList.toggle('hidden'); e.target.textContent = more.classList.contains('hidden') ? 'عرض الكل' : 'عرض أقل'; }
   });
 
+  animateKpiCountUps(); // عدّ تصاعدي لقيم KPI عند أول عرض للوحة
   destroyChart('sales'); destroyChart('cat'); destroyChart('branches');
   const kTick = (v) => v >= 1000 ? (v / 1000) + 'K' : v;
   charts.sales = new Chart($('chart-sales'), { type: 'line',
