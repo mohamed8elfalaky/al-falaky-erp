@@ -63,12 +63,12 @@ function destroyChart(key) { if (charts[key]) { charts[key].destroy(); delete ch
 // ترجمة أخطاء Firebase إلى عربي واضح
 function authErrorMessage(code) {
   return {
-    'auth/invalid-credential': 'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
+    'auth/invalid-credential': 'البريد الإلكتروني أو كلمة المرور غير صحيحة. تأكد أنك كتبت كلمة مرور الحساب (ليست كلمة مرور فتح الواجهة — الفتح موجود في نسخة التطبيق الكاملة فقط، وهنا الدخول بكلمة مرور الحساب مباشرة).',
     'auth/user-not-found': 'لا يوجد حساب بهذا البريد الإلكتروني.',
     'auth/wrong-password': 'كلمة المرور غير صحيحة.',
     'auth/user-disabled': 'هذا الحساب موقوف — راجع المالك.',
     'auth/too-many-requests': 'محاولات كثيرة — انتظر قليلاً ثم حاول مجدداً.',
-    'auth/network-request-failed': 'لا يوجد اتصال بالإنترنت.',
+    'auth/network-request-failed': 'تعذّر الوصول لخدمة المصادقة من هذا المتصفح — تحقق من الإنترنت أو جرّب متصفحاً آخر (رسالة الشبكة، وليست خطأ في كلمة المرور).',
     'auth/email-already-in-use': 'هذا البريد مسجّل بالفعل.'
   }[code] || 'تعذّر تسجيل الدخول — حاول مجدداً.';
 }
@@ -89,7 +89,9 @@ $('login-form').addEventListener('submit', async (e) => {
   $('login-btn').disabled = true;
   $('login-btn').textContent = 'جارٍ تسجيل الدخول...';
   try {
-    await signInWithEmailAndPassword(auth, $('login-email').value.trim(), $('login-password').value);
+    // نفس تطبيع شاشة الفتح: تجاهل المسافات الطرفية وتحويل الأرقام العربية للاتينية
+    const normPass = $('login-password').value.trim().replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
+    await signInWithEmailAndPassword(auth, $('login-email').value.trim(), normPass);
     // onAuthStateChanged يتولى الباقي
   } catch (err) {
     showError($('login-error'), authErrorMessage(err.code));
