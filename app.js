@@ -59,6 +59,17 @@ const fmtEGP = (piasters) => (Number(piasters || 0) / 100)
 const fmtEGPNum = (piasters) => (Number(piasters || 0) / 100)
   .toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtNum = (n) => Number(n || 0).toLocaleString('ar-EG');
+// نسب صحيحة مجموعها 100 دائماً (أكبر باقي — Largest Remainder)
+function shares100(values) {
+  const total = values.reduce((a, v) => a + Number(v || 0), 0);
+  if (!total) return values.map(() => 0);
+  const raw = values.map((v) => (Number(v || 0) / total) * 100);
+  const base = raw.map((r) => Math.floor(r));
+  let left = 100 - base.reduce((a, b) => a + b, 0);
+  const order = raw.map((r, i) => [r - base[i], i]).sort((a, b) => b[0] - a[0]);
+  for (let k = 0; k < left; k++) base[order[k % order.length][1]]++;
+  return base;
+}
 // نسبة التغير بين الشهر الحالي والشهر السابق (من بيانات Firestore الحقيقية)
 function pctDelta(cur, prev) {
   if (!prev || Number(prev) === 0) return { text: '—', cls: 'flat' };
@@ -386,7 +397,7 @@ async function renderDashboard() {
   // تنبيهات المخزون المنخفض — المنتجات النشطة فقط (الموقوفة لا تُنبَّه عنها)
   const lowStock = productsCache.filter((p) => {
     if (p.isActive === false) return false;
-    const q = productStock(p); return q !== null && Number(p.minStock || 0) > 0 && q < Number(p.minStock);
+    const q = productStock(p); return q !== null && q > 0 && Number(p.minStock || 0) > 0 && q < Number(p.minStock);
   });
   const outStock = productsCache.filter((p) => p.isActive !== false && productStock(p) === 0);
   const activeProducts = productsCache.filter((p) => p.isActive !== false);
@@ -420,6 +431,7 @@ async function renderDashboard() {
       catTotals[cat] = (catTotals[cat] || 0) + Number(d.lineTotalPiasters || 0); });
   }
   const catEntries = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
+  const catShares = shares100(catEntries.map(([, v]) => v)); // نسب صحيحة مجموعها 100
   const catColors = ['#2f81f7', '#f0883e', '#3fb950', '#a371f7', '#8b98a9', '#39c5cf'];
   // أداء الفروع (حسب فلتر المدة)
   const branchTotals = {};
@@ -468,7 +480,7 @@ async function renderDashboard() {
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(totalPurchases)}<span class="unit">ج.م</span></div><div class="label">إجمالي المشتريات</div><div class="delta ${dPurch.cls}">${dPurch.text}</div></div><div class="ico">🤝</div></div>
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(totalSales)}<span class="unit">ج.م</span></div><div class="label">إجمالي المبيعات</div><div class="delta ${dSales.cls}">${dSales.text}</div></div><div class="ico">🛒</div></div>
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(profit)}<span class="unit">ج.م</span></div><div class="label">صافي الربح</div><div class="delta ${dProfit.cls}">${dProfit.text}</div></div><div class="ico">📈</div></div>
-      <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(activeCustomers)}</div><div class="label">عملاء نشطين</div><div class="delta flat">—</div></div><div class="ico">👥</div></div>
+      <div class="card kpi"><div class="kpi-text"><div class="value">${Number(activeCustomers).toLocaleString('en-US')}</div><div class="label">عملاء نشطين</div><div class="delta flat">—</div></div><div class="ico">👥</div></div>
     </div>
     ${hasAny ? '' : `<div class="card">${emptyState('لا توجد بيانات بعد في Firestore — أنشئ منتجات وفواتير من صفحتي المنتجات والمبيعات، وستظهر المؤشرات هنا تلقائياً.')}</div>`}
     <div class="dash-row2">
@@ -481,7 +493,7 @@ async function renderDashboard() {
       </div>
       <div class="card"><h3>🍩 توزيع المبيعات حسب الفئة</h3>
         <div class="donut-wrap"><div class="chart-wrap"><canvas id="chart-cat"></canvas></div>
-        ${catEntries.length ? `<div class="donut-legend">${catEntries.map(([cat, v], i) => `<div class="leg-row"><span class="dot" style="background:${catColors[i % catColors.length]}"></span><span>${esc(cat)}</span><span class="pct">${Math.round(v / totalSales * 100)}%</span></div>`).join('')}</div>`
+        ${catEntries.length ? `<div class="donut-legend">${catEntries.map(([cat, v], i) => `<div class="leg-row"><span class="dot" style="background:${catColors[i % catColors.length]}"></span><span>${esc(cat)}</span><span class="pct">${catShares[i]}%</span></div>`).join('')}</div>`
         : `<div class="donut-legend"><div class="leg-row"><span class="dot" style="background:#8b98a9"></span><span>لا توجد مبيعات حسب الفئة بعد</span></div></div>`}</div></div>
     </div>
     <div class="dash-row3">
@@ -658,7 +670,7 @@ async function renderInventory() {
   const bals = await loadCollection('stockBalances');
   const inventoryValue = bals.reduce((a, b) =>
     a + Number(b.quantity || 0) * Number((prodById[b.productId] || {}).purchasePricePiasters || 0), 0);
-  const low = rows.filter((r) => r.stock !== null && Number(r.p.minStock || 0) > 0 && r.stock < Number(r.p.minStock)).length;
+  const low = rows.filter((r) => r.stock !== null && r.stock > 0 && Number(r.p.minStock || 0) > 0 && r.stock < Number(r.p.minStock)).length;
   const out = rows.filter((r) => r.stock === 0).length;
   $('page').innerHTML = `
     <h2 class="page-title">🗃️ المخزون</h2>
@@ -1291,7 +1303,7 @@ async function answerAI(q) {
   const todaySales = posted.filter((s) => tsToDate(s.date || s.createdAt) >= today)
     .reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
   const totalSales = posted.reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
-  const low = productsCache.filter((p) => { const st = productStock(p); return st !== null && Number(p.minStock || 0) > 0 && st < Number(p.minStock); });
+  const low = productsCache.filter((p) => { const st = productStock(p); return st !== null && st > 0 && Number(p.minStock || 0) > 0 && st < Number(p.minStock); });
   const active = customers.filter((c) => c.isActive !== false).length;
   if (/مبيعات اليوم|مبيعات النهاردة|بيع.*اليوم/.test(q)) return `مبيعات اليوم: ${fmtEGP(todaySales)} (${posted.filter((s) => tsToDate(s.date || s.createdAt) >= today).length} فاتورة منشورة).`;
   if (/ربح/.test(q)) {
