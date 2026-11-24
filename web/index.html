@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>الفلكي لقطع غيار السيارات — Al-Falaky Smart ERP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ================= شاشة الدخول (أول شيء يظهر) ================= -->
+<!-- القفل الوحيد هنا هو Firebase Auth — لا يوجد أي باسورد مشترك في الكود. -->
+<section id="login-screen">
+  <div class="login-card">
+    <div class="logo-mark">🚗</div>
+    <h1>الفلكي لقطع غيار السيارات</h1>
+    <p class="sub">Al-Falaky Auto Spare Parts — نظام الإدارة الذكي</p>
+    <form id="login-form">
+      <label for="login-email">البريد الإلكتروني</label>
+      <input id="login-email" type="email" required dir="ltr" placeholder="name@example.com" autocomplete="username">
+      <label for="login-password">كلمة المرور</label>
+      <input id="login-password" type="password" required autocomplete="current-password" placeholder="••••••••">
+      <button class="btn" type="submit" id="login-btn">تسجيل الدخول</button>
+      <div class="error" id="login-error"></div>
+    </form>
+    <p class="note">التسجيل مغلق — الحسابات تُنشأ فقط من المالك (إدارة الموظفين).
+      إذا ظهر خطأ صلاحيات، فحسابك يحتاج تصاريح (orgId / role / branchIds) من المالك.</p>
+  </div>
+</section>
+
+<!-- ================= التطبيق بعد الدخول ================= -->
+<div id="app" class="hidden">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo-mark">🚗</div>
+      <h2>الفلكي لقطع غيار السيارات</h2>
+      <small>Al-Falaky Auto Spare Parts</small>
+    </div>
+    <nav id="main-nav"><!-- تُبنى من app.js حسب صلاحيات المستخدم --></nav>
+    <div style="flex:1"></div>
+    <button class="nav-item" id="logout-btn"><span class="ico">🚪</span> تسجيل الخروج</button>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="search-box">
+        <input id="global-search" type="search" placeholder="ابحث عن منتج، رقم قطعة، أو سيارة...">
+        <button class="btn scan small" id="scan-btn-top" title="مسح باركود / QR بالكاميرا">📷 مسح</button>
+      </div>
+      <span class="badge" id="conn-badge">⏳ جارٍ الاتصال بـ Firestore...</span>
+      <div class="user-chip"><span class="avatar" id="user-avatar">؟</span><span id="user-name">—</span></div>
+    </header>
+
+    <main class="content" id="page"><!-- تُملأ من app.js --></main>
+
+    <footer>نظام الفلكي لإدارة قطع غيار السيارات — v1.0.0 | البيانات من Firestore مباشرة | معاً.. نحو مستقبل أفضل</footer>
+  </div>
+</div>
+
+<!-- ================= نافذة المسح بالكاميرا ================= -->
+<div id="scan-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>📷 مسح باركود / QR</h3>
+    <p class="note" style="text-align:right">وجّه الكاميرا نحو الباركود أو رمز QR على القطعة. إن لم تدعم الكاميرا، أدخل الكود يدوياً بالأسفل.</p>
+    <video id="scan-video" playsinline muted></video>
+    <div class="error" id="scan-error"></div>
+    <label for="manual-code">أو أدخل الكود يدوياً</label>
+    <div style="display:flex;gap:8px">
+      <input id="manual-code" dir="ltr" placeholder="مثال: 90915-YZZE1">
+      <button class="btn small" id="manual-search-btn" type="button">بحث</button>
+    </div>
+    <div id="scan-result"></div>
+    <button class="btn secondary" id="scan-close-btn" type="button">إغلاق</button>
+  </div>
+</div>
+
+<!-- ================= نافذة منتج (إضافة / تعديل) ================= -->
+<div id="product-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="product-modal-title">منتج جديد</h3>
+    <form id="product-form">
+      <label>اسم المنتج (عربي) *</label><input id="pf-name-ar" required>
+      <label>اسم المنتج (English)</label><input id="pf-name-en" dir="ltr">
+      <label>رقم القطعة الأصلي *</label><input id="pf-part" required dir="ltr">
+      <label>أرقام بديلة (افصل بفاصلة)</label><input id="pf-alt" dir="ltr" placeholder="90915-YZZD2, 90915-YZZE2">
+      <label>باركود</label><input id="pf-barcode" dir="ltr">
+      <label>رمز QR</label><input id="pf-qr" dir="ltr">
+      <label>التصنيف</label><select id="pf-category"></select>
+      <label>العلامة التجارية</label><select id="pf-brand"></select>
+      <label>سعر الشراء (جنيه)</label><input id="pf-buy" type="number" step="0.01" min="0" value="0">
+      <label>سعر البيع (جنيه) *</label><input id="pf-sell" type="number" step="0.01" min="0" required value="0">
+      <label>سعر الجملة (جنيه)</label><input id="pf-wholesale" type="number" step="0.01" min="0" value="0">
+      <label>حد إعادة الطلب (أقل مخزون)</label><input id="pf-min" type="number" min="0" value="0">
+      <label>الموقع في المخزن</label><input id="pf-loc" placeholder="مثال: A-01">
+      <label>رقم الرف</label><input id="pf-shelf" placeholder="مثال: A-01-03">
+      <label>ملاحظات داخلية</label><textarea id="pf-notes" rows="2"></textarea>
+      <button class="btn" type="submit">حفظ المنتج</button>
+      <button class="btn secondary" type="button" id="product-cancel-btn">إلغاء</button>
+      <div class="error" id="product-error"></div>
+    </form>
+  </div>
+</div>
+
+<!-- ================= نافذة عميل / مورد ================= -->
+<div id="contact-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="contact-modal-title">إضافة</h3>
+    <form id="contact-form">
+      <label>الاسم *</label><input id="cf-name" required>
+      <label>الهاتف *</label><input id="cf-phone" required dir="ltr">
+      <label>البريد الإلكتروني</label><input id="cf-email" type="email" dir="ltr">
+      <label>العنوان</label><input id="cf-address">
+      <label>الرصيد الافتتاحي (جنيه)</label><input id="cf-balance" type="number" step="0.01" value="0">
+      <button class="btn" type="submit">حفظ</button>
+      <button class="btn secondary" type="button" id="contact-cancel-btn">إلغاء</button>
+      <div class="error" id="contact-error"></div>
+    </form>
+  </div>
+</div>
+
+<!-- ================= نافذة موظف جديد (مالك فقط) ================= -->
+<div id="employee-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>موظف جديد</h3>
+    <p class="note" style="text-align:right">يُنشأ حساب الموظف في Firebase Auth، وتُحفظ واجهاته وصلاحياته في مستند users الخاص به.</p>
+    <form id="employee-form">
+      <label>الاسم *</label><input id="ef-name" required>
+      <label>البريد الإلكتروني *</label><input id="ef-email" type="email" required dir="ltr">
+      <label>كلمة مرور مؤقتة *</label><input id="ef-pass" type="password" required minlength="6">
+      <label>الدور</label>
+      <select id="ef-role">
+        <option value="sales">موظف مبيعات</option>
+        <option value="inventory">أمين مخزن</option>
+        <option value="accountant">محاسب</option>
+        <option value="manager">مدير عام</option>
+        <option value="storekeeper">أمين مستودع</option>
+      </select>
+      <label>الواجهات المسموحة (اختر واحدة أو أكثر)</label>
+      <div id="ef-interfaces" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px"></div>
+      <label>صلاحيات (اختياري — مثال: sales.create, products.view)</label>
+      <input id="ef-perms" dir="ltr" placeholder="sales.create, products.view">
+      <button class="btn" type="submit">إنشاء الموظف</button>
+      <button class="btn secondary" type="button" id="employee-cancel-btn">إلغاء</button>
+      <div class="error" id="employee-error"></div>
+    </form>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
