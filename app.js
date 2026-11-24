@@ -427,9 +427,10 @@ async function renderDashboard() {
   const dSales = pctDelta(salesCur, salesPrev);
   const dPurch = pctDelta(purchCur, purchPrev);
   const dProfit = pctDelta(profitCur, profitPrev);
+  const hasProducts = productsCache.length > 0;
   const ringC = 2 * Math.PI * 52;
-  const ringColor = inStockPct >= 80 ? '#3fb950' : inStockPct >= 50 ? '#f0883e' : '#f85149';
-  const stockStatus = inStockPct >= 80 ? { text: 'مخزون آمن ✓', cls: 'ok' } : inStockPct >= 50 ? { text: 'مخزون يحتاج متابعة', cls: 'warn' } : { text: 'مخزون حرج — راجع المشتريات', cls: 'bad' };
+  const ringColor = !hasProducts ? '#8b98a9' : inStockPct >= 80 ? '#3fb950' : inStockPct >= 50 ? '#f0883e' : '#f85149';
+  const stockStatus = !hasProducts ? { text: 'لا توجد منتجات بعد', cls: 'flat' } : inStockPct >= 80 ? { text: 'مخزون آمن ✓', cls: 'ok' } : inStockPct >= 50 ? { text: 'مخزون يحتاج متابعة', cls: 'warn' } : { text: 'مخزون حرج — راجع المشتريات', cls: 'bad' };
   const medalCls = (r) => r === 1 ? 'gold' : r === 2 ? 'silver' : r === 3 ? 'bronze' : 'plain';
 
   const heroArt = `<div class="hero-art"><svg viewBox="0 0 640 190" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
@@ -470,13 +471,13 @@ async function renderDashboard() {
         <div class="chart-wrap"><canvas id="chart-sales"></canvas></div>
       </div>
       <div class="card"><h3>🍩 توزيع المبيعات حسب الفئة</h3>
-        ${catEntries.length ? `<div class="donut-wrap"><div class="chart-wrap"><canvas id="chart-cat"></canvas></div>
-        <div class="donut-legend">${catEntries.map(([cat, v], i) => `<div class="leg-row"><span class="dot" style="background:${catColors[i % catColors.length]}"></span><span>${esc(cat)}</span><span class="pct">${Math.round(v / totalSales * 100)}%</span></div>`).join('')}</div></div>`
-        : emptyState('لا توجد مبيعات حسب الفئة بعد.')}</div>
+        <div class="donut-wrap"><div class="chart-wrap"><canvas id="chart-cat"></canvas></div>
+        ${catEntries.length ? `<div class="donut-legend">${catEntries.map(([cat, v], i) => `<div class="leg-row"><span class="dot" style="background:${catColors[i % catColors.length]}"></span><span>${esc(cat)}</span><span class="pct">${Math.round(v / totalSales * 100)}%</span></div>`).join('')}</div>`
+        : `<div class="donut-legend"><div class="leg-row"><span class="dot" style="background:#8b98a9"></span><span>لا توجد مبيعات حسب الفئة بعد</span></div></div>`}</div></div>
     </div>
     <div class="dash-row3">
       <div class="card">
-        <div class="card-head"><h3>🔔 التنبيهات والتنبيهات</h3><button class="link-btn" id="alerts-all-btn">عرض الكل</button></div>
+        <div class="card-head"><h3>🔔 التنبيهات</h3><button class="link-btn" id="alerts-all-btn">عرض الكل</button></div>
         ${alerts.length ? alerts.slice(0, 4).map((a) => `<div class="alert-row"><span class="a-ico">${a.ico}</span><span>${esc(a.text)}</span><span class="a-time">${a.time}</span></div>`).join('') + (alerts.length > 4 ? `<div class="alerts-more hidden">${alerts.slice(4).map((a) => `<div class="alert-row"><span class="a-ico">${a.ico}</span><span>${esc(a.text)}</span><span class="a-time">${a.time}</span></div>`).join('')}</div>` : '') : emptyState('لا توجد تنبيهات حالياً.')}
       </div>
       <div class="card"><h3>📦 حالة المخزون</h3>
@@ -517,7 +518,7 @@ async function renderDashboard() {
       { label: 'المشتريات', data: purchByMonth, borderColor: '#f0883e', backgroundColor: 'rgba(240,136,62,.15)', fill: true, tension: 0.4, pointBackgroundColor: '#f0883e' } ] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#e6edf3', usePointStyle: true } } },
       scales: { x: { ticks: { color: '#8b98a9' }, grid: { color: 'rgba(139,152,169,.08)' } },
-        y: { ticks: { color: '#8b98a9', callback: kTick }, grid: { color: 'rgba(139,152,169,.08)' } } } } });
+        y: { min: 0, ticks: { color: '#8b98a9', callback: kTick }, grid: { color: 'rgba(139,152,169,.08)' } } } } });
   if (catEntries.length) {
     const donutTotal = fmtEGPNum(totalSales);
     const centerText = { id: 'centerText', afterDraw(chart) {
@@ -532,6 +533,19 @@ async function renderDashboard() {
         backgroundColor: catColors, borderColor: '#0d1f3c', borderWidth: 2 }] },
       options: { responsive: true, maintainAspectRatio: false, cutout: '62%',
         plugins: { legend: { display: false } } }, plugins: [centerText] });
+  } else {
+    // دونات محايدة حتى مع غياب البيانات — الحلقة الرمادية تترسم دائماً
+    const centerText = { id: 'centerText', afterDraw(chart) {
+      const meta = chart.getDatasetMeta(0); if (!meta.data[0]) return;
+      const { x, y } = meta.data[0]; const ctx = chart.ctx;
+      ctx.save(); ctx.textAlign = 'center'; ctx.fillStyle = '#8b98a9';
+      ctx.font = '700 15px Cairo, sans-serif'; ctx.fillText('لا توجد مبيعات', x, y); ctx.restore();
+    } };
+    charts.cat = new Chart($('chart-cat'), { type: 'doughnut',
+      data: { labels: ['لا توجد بيانات'], datasets: [{ data: [1],
+        backgroundColor: ['rgba(139,152,169,.25)'], borderColor: '#0d1f3c', borderWidth: 2 }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: { legend: { display: false }, tooltip: { enabled: false } } }, plugins: [centerText] });
   }
   if (branchLabels.length) {
     charts.branches = new Chart($('chart-branches'), { type: 'bar',
@@ -539,7 +553,7 @@ async function renderDashboard() {
         backgroundColor: '#2f81f7', borderRadius: 6, maxBarThickness: 60 }] },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
         scales: { x: { ticks: { color: '#8b98a9' }, grid: { display: false } },
-          y: { ticks: { color: '#8b98a9', callback: kTick }, grid: { color: 'rgba(139,152,169,.08)' } } } } });
+          y: { min: 0, ticks: { color: '#8b98a9', callback: kTick }, grid: { color: 'rgba(139,152,169,.08)' } } } } });
   }
 }
 
