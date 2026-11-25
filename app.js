@@ -348,8 +348,21 @@ async function go(page) {
     ai: renderAI, help: renderHelp };
   if (!renderers[page]) { await go('dashboard'); return; }
   $('page').innerHTML = '<div class="empty">جارٍ تحميل البيانات من Firestore...</div>';
-  try { await renderers[page](); }
-  catch (err) { $('page').innerHTML = `<div class="error show">${esc(firestoreErrorMessage(err))}</div>`; }
+  invoiceItemsCache = {}; // بنود جديدة بعد أي عملية بيع/شراء تُحمّل من جديد
+  let loadTimer = null;
+  try {
+    const timeout = new Promise((_, rej) => { loadTimer = setTimeout(() => rej(new Error('load-timeout')), 30000); });
+    await Promise.race([renderers[page](), timeout]);
+    clearTimeout(loadTimer);
+  }
+  catch (err) {
+    clearTimeout(loadTimer);
+    if (err && err.message === 'load-timeout') {
+      $('page').innerHTML = `<div class="error show">التحميل أخذ وقتاً طويلاً — تحقق من الإنترنت ثم اضغط إعادة المحاولة.</div><button class="btn" onclick="location.reload()">↻ إعادة المحاولة</button>`;
+    } else {
+      $('page').innerHTML = `<div class="error show">${esc(firestoreErrorMessage(err))}</div>`;
+    }
+  }
 }
 
 // بيانات مرجعية: فروع/مخازن/تصنيفات/علامات (للقوائم المنسدلة)
@@ -396,6 +409,18 @@ function productStock(p) { return balancesCache[p.id] ?? null; } // null = لا 
 // ============================================================================
 // 4) لوحة التحكم — كل المؤشرات من Firestore، وبدون بيانات تظهر حالات فارغة
 // ============================================================================
+// بنود الفواتير — تُحمّل مرة واحدة بالتوازي وتُحفظ في الذاكرة طوال الجلسة
+// (بدل قراءة متسلسلة لبنود كل فاتورة على حدة، اللي كانت تعلّق لوحة التحكم)
+let invoiceItemsCache = {}; // invoiceId -> [items]
+async function loadInvoiceItems(invoices) {
+  const missing = invoices.filter((inv) => !(inv.id in invoiceItemsCache));
+  if (missing.length) {
+    const snaps = await Promise.all(missing.map((inv) => getDocs(collection(db, 'salesInvoices', inv.id, 'items'))));
+    snaps.forEach((snap, i) => { invoiceItemsCache[missing[i].id] = snap.docs.map((d) => d.data()); });
+  }
+  return invoiceItemsCache;
+}
+
 async function renderDashboard() {
   const [sales, purchases, customers, bals, salesPays, purchPays] = await Promise.all([
     loadCollection('salesInvoices'),
@@ -421,10 +446,10 @@ async function renderDashboard() {
   const purchPrev = monthSum(postedPurchases, prevMonth.getFullYear(), prevMonth.getMonth());
   // الربح = الإيراد − تكلفة البضاعة المباعة (من بنود آخر 60 فاتورة)، وحساب التكلفة حسب الشهر
   const cogsByMonth = {};
+  await loadInvoiceItems(posted.slice(0, 60));
   for (const inv of posted.slice(0, 60)) {
-    const items = await getDocs(collection(db, 'salesInvoices', inv.id, 'items'));
     const k = monthKey(tsToDate(inv.date || inv.createdAt));
-    items.forEach((it) => { const d = it.data(); cogsByMonth[k] = (cogsByMonth[k] || 0) + Number(d.costPricePiasters || 0) * Number(d.quantity || 0); });
+    (invoiceItemsCache[inv.id] || []).forEach((d) => { cogsByMonth[k] = (cogsByMonth[k] || 0) + Number(d.costPricePiasters || 0) * Number(d.quantity || 0); });
   }
   const cogs = Object.values(cogsByMonth).reduce((a, v) => a + v, 0);
   const profit = totalSales - cogs;
@@ -459,8 +484,7 @@ async function renderDashboard() {
   // أكثر المنتجات مبيعاً (من بنود آخر 60 فاتورة)
   const soldQty = {};
   for (const inv of posted.slice(0, 60)) {
-    const items = await getDocs(collection(db, 'salesInvoices', inv.id, 'items'));
-    items.forEach((it) => { const d = it.data(); soldQty[d.productId] = (soldQty[d.productId] || 0) + Number(d.quantity || 0); });
+    (invoiceItemsCache[inv.id] || []).forEach((d) => { soldQty[d.productId] = (soldQty[d.productId] || 0) + Number(d.quantity || 0); });
   }
   const best = Object.entries(soldQty).sort((a, b) => b[1] - a[1]).slice(0, 5)
     .map(([pid, qty], i) => ({ rank: i + 1, name: (prodById[pid] || {}).name_ar || pid,
@@ -498,8 +522,7 @@ async function renderDashboard() {
   // مبيعات حسب الفئة (من بنود الفواتير)
   const catTotals = {};
   for (const inv of posted.slice(0, 60)) {
-    const items = await getDocs(collection(db, 'salesInvoices', inv.id, 'items'));
-    items.forEach((it) => { const d = it.data(); const cat = categoryName((prodById[d.productId] || {}).categoryId);
+    (invoiceItemsCache[inv.id] || []).forEach((d) => { const cat = categoryName((prodById[d.productId] || {}).categoryId);
       catTotals[cat] = (catTotals[cat] || 0) + Number(d.lineTotalPiasters || 0); });
   }
   const catEntries = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
@@ -1429,9 +1452,9 @@ async function answerAI(q) {
   if (/مبيعات اليوم|مبيعات النهاردة|بيع.*اليوم/.test(q)) return `مبيعات اليوم: ${fmtEGP(todaySales)} (${posted.filter((s) => tsToDate(s.date || s.createdAt) >= today).length} فاتورة منشورة).`;
   if (/ربح/.test(q)) {
     let cogs = 0;
+    await loadInvoiceItems(posted.slice(0, 60));
     for (const inv of posted.slice(0, 60)) {
-      const items = await getDocs(collection(db, 'salesInvoices', inv.id, 'items'));
-      items.forEach((it) => { const d = it.data(); cogs += Number(d.costPricePiasters || 0) * Number(d.quantity || 0); });
+      (invoiceItemsCache[inv.id] || []).forEach((d) => { cogs += Number(d.costPricePiasters || 0) * Number(d.quantity || 0); });
     }
     return `صافي الربح الإجمالي (من آخر 60 فاتورة): ${fmtEGP(totalSales - cogs)} — الإيراد ${fmtEGP(totalSales)} ناقص تكلفة البضاعة ${fmtEGP(cogs)}.`;
   }
@@ -1441,9 +1464,9 @@ async function answerAI(q) {
   }
   if (/الأكثر مبيعاً|أكثر.*مبيع|أفضل/.test(q)) {
     const sold = {};
+    await loadInvoiceItems(posted.slice(0, 60));
     for (const inv of posted.slice(0, 60)) {
-      const items = await getDocs(collection(db, 'salesInvoices', inv.id, 'items'));
-      items.forEach((it) => { const d = it.data(); sold[d.productId] = (sold[d.productId] || 0) + Number(d.quantity || 0); });
+      (invoiceItemsCache[inv.id] || []).forEach((d) => { sold[d.productId] = (sold[d.productId] || 0) + Number(d.quantity || 0); });
     }
     const top = Object.entries(sold).sort((a, b) => b[1] - a[1]).slice(0, 5);
     if (!top.length) return 'لا توجد مبيعات مسجلة بعد لأحدد الأكثر مبيعاً.';
