@@ -2446,9 +2446,9 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
     </div>
     ${inv.isManualDebt ? `<div class="inv-notes">مديونية مسجلة يدوياً (بدون بنود منتجات) — البيان: <b>${esc(inv.manualReason || '—')}</b>${inv.manualDetails ? ` — التفاصيل: <b>${esc(inv.manualDetails)}</b>` : ''}${inv.isAdjustment ? ` — تعديل للمبلغ من <b>${fmtEGP(inv.oldRemainingPiasters)}</b> إلى <b>${fmtEGP(inv.newRemainingPiasters)}</b>` : ''}</div>` : `
     <table class="inv-table items-table">
-      <tr><th>#</th><th>الصنف</th><th>رقم القطعة</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr>
+      <tr><th>#</th><th>الصنف</th><th>رقم القطعة</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr>
       ${items.map((it, i) => `<tr>
-        <td>${i + 1}</td><td>${esc(it.productName_ar || it.productName || '—')}</td>
+        <td>${i + 1}</td><td>${esc(it.productName_ar || it.productName || '—').replace(/ /g, ' ')}</td>
         <td dir="ltr">${esc(it.partNumber || '—')}</td>
         <td class="num">${fmtNum(it.quantity)}</td>
         <td class="num">${fmtEGP(it.unitPricePiasters)}</td>
@@ -2555,21 +2555,21 @@ function statementHTML(kind, contact, openList, myPayments, invById) {
       <div><span>المديونية المفتوحة:</span> <b>${fmtEGP(totalDebt)}</b></div>
     </div>
     <h3 style="color:#111;margin:14px 0 8px">الفواتير المفتوحة</h3>
-    ${openList.length ? `<table class="inv-table stmt-table"><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>التفاصيل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr>
+    ${openList.length ? `<table class="inv-table stmt-table"><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>التفاصيل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr>
       ${openList.map(({ inv, remaining, paid, details }) => `<tr>
-        <td dir="ltr">${esc(inv.invoiceNumber || inv.id)}</td>
+        <td dir="ltr">${wbrHyphens(esc(inv.invoiceNumber || inv.id))}</td>
         <td>${tsToDate(inv.date || inv.createdAt).toLocaleDateString('ar-EG')}</td>
         <td>${dueDateOf(inv).toLocaleDateString('ar-EG')}</td>
         <td style="text-align:right">${esc(details || (inv.isManualDebt ? (inv.manualDetails || inv.manualReason || '') : ''))}</td>
         <td class="num">${fmtEGP(inv.totalPiasters)}</td><td class="num">${fmtEGP(paid)}</td><td class="num">${fmtEGP(remaining)}</td></tr>`).join('')}</table>`
     : '<p>لا توجد فواتير مفتوحة.</p>'}
     <h3 style="color:#111;margin:14px 0 8px">سجل الدفعات</h3>
-    ${myPayments.length ? `<table class="inv-table"><tr><th>التاريخ</th><th>الفاتورة</th><th>طريقة الدفع</th><th>المبلغ</th><th>ملاحظات</th></tr>
+    ${myPayments.length ? `<table class="inv-table"><tr><th>التاريخ</th><th>الفاتورة</th><th>طريقة الدفع</th><th>المبلغ</th><th>ملاحظات</th></tr>
       ${myPayments.map((p) => {
         const invId = isCust ? p.salesInvoiceId : p.purchaseInvoiceId;
         const inv = invId ? invById[invId] : null;
         return `<tr><td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td>
-        <td dir="ltr">${inv ? esc(inv.invoiceNumber || inv.id) : 'على الحساب'}</td>
+        <td dir="ltr">${inv ? wbrHyphens(esc(inv.invoiceNumber || inv.id)) : 'على الحساب'}</td>
         <td>${payMethodLabel(p.paymentMethod)}</td><td class="num">${fmtEGP(p.amountPiasters)}</td><td>${esc(p.notes || '')}</td></tr>`;
       }).join('')}</table>
       <div class="inv-totals"><div><span>إجمالي الدفعات:</span> <b>${fmtEGP(totalPaid)}</b></div></div>`
@@ -2589,45 +2589,65 @@ function printStatement(kind, contact, openList, myPayments, invById) {
 // فيحافظ على تشكيل العربية واتجاه RTL من غير خطوط PDF عربية. قراءة فقط —
 // لا يغيّر أي بيانات أو أرصدة. الملف يتنزل باسم رقم الفاتورة.
 // ===========================================================================
-function canvasHasContent(canvas) {
-  if (!canvas || !canvas.width || !canvas.height) return false;
+// حدود الحبر في اللوحة: أين يبدأ وينتهي المحتوى غير الأبيض (لكشف القصّ قبل الحفظ)
+function canvasInkBox(canvas) {
+  if (!canvas || !canvas.width || !canvas.height) return null;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return false;
-  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  let found = 0;
-  for (let i = 0; i < data.length; i += 16) { // عيّنة: كل 4 بكسلات
-    if (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250) {
-      if (++found >= 500) return true;
+  if (!ctx) return null;
+  const w = canvas.width, h = canvas.height;
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1, count = 0;
+  for (let y = 0; y < h; y += 2) {
+    for (let x = 0; x < w; x += 2) {
+      const i = (y * w + x) * 4;
+      if (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250) {
+        count++;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
     }
   }
-  return false;
+  if (count === 0) return { count: 0, x0: 0, y0: 0, x1: 0, y1: 0 };
+  return { count, x0, y0, x1, y1 };
+}
+function canvasHasContent(canvas) {
+  const box = canvasInkBox(canvas);
+  return !!box && box.count >= 500;
 }
 // html2canvas يسقط المسافات بين الكلمات العربية عند إعادة ترتيب الكلمات RTL —
 // نستبدل المسافة العادية بمسافة غير فاصلة (\u00A0) في نصوص ورقة الـ PDF
 // (الحل المتعارف عليه لهذه المشكلة)، فتُرسَم الكلمات متصلة بمسافة ظاهرة.
+// مهم: لا نمسّ نصوص الجداول — المسافة غير الفاصلة تجعل النص كلمة واحدة
+// لا تنكسر، فينهار تخطيط الأعمدة الثابتة (تصبح متساوية ويُقصّ رقم الفاتورة).
+// عناوين الجداول وأسماء المنتجات تُكتب بمسافة غير فاصلة أصلاً عند بناء الـ HTML.
 function fixArabicSpaces(root) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
   for (const n of nodes) {
-    if (n.nodeValue.includes(' ')) n.nodeValue = n.nodeValue.replace(/ /g, '\u00A0');
+    if (n.nodeValue.includes(' ') && !(n.parentElement && n.parentElement.closest('table'))) n.nodeValue = n.nodeValue.replace(/ /g, '\u00A0');
   }
 }
+// فرصة كسر بعد كل شرطة في رقم فاتورة طويل، حتى يلتف داخل عمود ضيق في الـ PDF
+// (html2canvas لا يكسر الرقم الطويل بنفسه) — بلا أثر على الشاشة إن لم يحتج الكسر.
+function wbrHyphens(s) { return String(s == null ? '' : s).replace(/-/g, '-<wbr>'); }
 async function downloadElementAsPDF(html, filename) {
   if (typeof html2pdf === 'undefined') {
     alert('تعذّر تحميل مكتبة PDF — تأكّد من الاتصال بالإنترنت ثم أعد المحاولة.');
     return;
   }
-  // الحاوية في التدفق الطبيعي (ليست fixed) داخل غلاف مطلق خلف الواجهة —
-  // نسخة fixed كانت تنهار في استنساخ html2canvas (ارتفاع اللوحة 0) فتطلع صفحة بيضاء.
-  // ملاحظة: حزمة html2pdf لا تعرّض html2canvas كمتغير عام، فلا نفحصه —
-  // التحقق يتم من اللوحة نفسها عبر عامل html2pdf.
+  // الغلاف LTR صريح يحمل ورقة RTL بعرض ثابت 794px — لا نعتمد على تخطيط
+  // تدفق RTL داخل استنساخ html2canvas (عرض التخطيط فيه لم يكن 794px،
+  // فكان الحبر يظهر في مكان غريب والمحتوى يُقصّ من اليسار)
   const wrap = document.createElement('div');
+  wrap.setAttribute('dir', 'ltr');
   wrap.style.cssText = 'position:absolute;left:0;top:0;width:794px;z-index:-1;';
   const host = document.createElement('div');
   host.className = 'pdf-doc';
   host.setAttribute('dir', 'rtl');
-  host.style.cssText = 'width:794px;background:#fff;';
+  host.style.cssText = 'width:794px;max-width:794px;background:#fff;';
   host.innerHTML = html;
   fixArabicSpaces(host);
   wrap.appendChild(host);
@@ -2638,17 +2658,22 @@ async function downloadElementAsPDF(html, filename) {
     margin: 0,
     filename,
     image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollX: 0, scrollY: 0, windowWidth: 794 },
+    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollX: 0, scrollY: 0, windowWidth: 794, x: 0, y: 0, width: 794 },
     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
     // لا تقطع صف جدول أو مجموع أو تذييل بين صفحتين
     pagebreak: { mode: ['css', 'legacy'], avoid: ['.inv-table tr', '.inv-totals', '.inv-foot', '.pdf-doc h3'] }
   };
   try {
     // تحقق قبل الحفظ: صوّر أولاً بنفس عامل html2pdf وتأكد أن اللوحة فيها محتوى
+    // وأن الحبر يمتد عبر عرض الصفحة (وإلا فالمحتوى مقصوص)
     const worker = html2pdf().set(opt).from(host).toCanvas();
     const canvas = await worker.get('canvas');
-    if (!canvasHasContent(canvas)) {
-      alert('تعذّر تصوير ورقة الفاتورة — الصفحة الناتجة فارغة. حاول مرة أخرى، ولو استمرت المشكلة أعد تحميل الصفحة.');
+    const box = canvasInkBox(canvas);
+    const w = canvas ? canvas.width : 0;
+    const contentOk = box && box.count >= 500;
+    const fitsWidth = box && box.x0 >= 4 && box.x1 <= w - 5 && box.x1 >= w * 0.8;
+    if (!contentOk || !fitsWidth) {
+      alert('تعذّر تصوير ورقة الفاتورة بشكل كامل — المحتوى خارج حدود الصفحة. حاول مرة أخرى، ولو استمرت المشكلة أعد تحميل الصفحة.');
       return;
     }
     await worker.toPdf().save();
@@ -2669,7 +2694,7 @@ async function downloadInvoicePDF(kind, invoiceId) {
   const html = `${invoiceSheetHTML(kind, inv, items, contact, paid, remaining)}
   <div class="inv-sheet" dir="rtl" style="margin-top:14px">
     <h3 style="color:#111;margin:0 0 8px">سجل الدفعات على هذه الفاتورة</h3>
-    ${payments.length ? `<table class="inv-table"><tr><th>التاريخ</th><th>طريقة الدفع</th><th>المبلغ</th><th>ملاحظات</th></tr>
+    ${payments.length ? `<table class="inv-table"><tr><th>التاريخ</th><th>طريقة الدفع</th><th>المبلغ</th><th>ملاحظات</th></tr>
       ${payments.map((p) => `<tr><td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td>
       <td>${payMethodLabel(p.paymentMethod)}</td><td class="num">${fmtEGP(p.amountPiasters)}</td><td>${esc(p.notes || '')}</td></tr>`).join('')}</table>`
     : '<p>لا توجد دفعات لاحقة مسجلة على هذه الفاتورة.</p>'}
