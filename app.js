@@ -442,10 +442,11 @@ function debtDetailsText(inv, items) {
 }
 
 async function renderDashboard() {
-  const [sales, purchases, customers, bals, salesPays, purchPays] = await Promise.all([
+  const [sales, purchases, customers, suppliers, bals, salesPays, purchPays] = await Promise.all([
     loadCollection('salesInvoices'),
     loadCollection('purchaseInvoices'),
     loadCollection('customers'),
+    loadCollection('suppliers'),
     loadCollection('stockBalances'),
     loadCollection('salesPayments'),
     loadCollection('purchasePayments')
@@ -495,9 +496,10 @@ async function renderDashboard() {
   salesPays.forEach((p) => { if (p.salesInvoiceId) salesPayByInv[p.salesInvoiceId] = (salesPayByInv[p.salesInvoiceId] || 0) + Number(p.amountPiasters || 0); });
   const purchPayByInv = {};
   purchPays.forEach((p) => { if (p.purchaseInvoiceId) purchPayByInv[p.purchaseInvoiceId] = (purchPayByInv[p.purchaseInvoiceId] || 0) + Number(p.amountPiasters || 0); });
-  const custDebtTotal = posted.reduce((a, s) => a + remainingOf(s, salesPayByInv), 0);
+  const openingSum = (list) => list.reduce((a, c) => a + Math.max(0, Number(c.openingBalancePiasters || 0)), 0);
+  const custDebtTotal = posted.reduce((a, s) => a + remainingOf(s, salesPayByInv), 0) + openingSum(customers);
   const custDebtCount = posted.filter((s) => remainingOf(s, salesPayByInv) > 0).length;
-  const supDebtTotal = postedPurchases.reduce((a, p) => a + remainingOf(p, purchPayByInv), 0);
+  const supDebtTotal = postedPurchases.reduce((a, p) => a + remainingOf(p, purchPayByInv), 0) + openingSum(suppliers);
   const supDebtCount = postedPurchases.filter((p) => remainingOf(p, purchPayByInv) > 0).length;
   const debtCardsHTML = `
     <div class="debt-cards">
@@ -1220,18 +1222,20 @@ async function renderPurchases() {
 // 9) الحسابات والتقارير (مالك فقط) — من القيود والفواتير الحقيقية
 // ============================================================================
 async function renderAccounts() {
-  const [entries, expenses, cashboxes, salesInvs, purchInvs, salesPays, purchPays] = await Promise.all([
+  const [entries, expenses, cashboxes, salesInvs, purchInvs, salesPays, purchPays, customers, suppliers] = await Promise.all([
     loadCollection('journalEntries'), loadCollection('expenses'), loadCollection('cashboxes'),
     loadCollection('salesInvoices'), loadCollection('purchaseInvoices'),
-    loadCollection('salesPayments'), loadCollection('purchasePayments')
+    loadCollection('salesPayments'), loadCollection('purchasePayments'),
+    loadCollection('customers'), loadCollection('suppliers')
   ]);
   const debit = entries.filter((e) => e.status !== 'reversed').reduce((a, e) => a + Number(e.totalDebitPiasters || 0), 0);
   const credit = entries.filter((e) => e.status !== 'reversed').reduce((a, e) => a + Number(e.totalCreditPiasters || 0), 0);
   const expTotal = expenses.filter((e) => e.status !== 'cancelled').reduce((a, e) => a + Number(e.amountPiasters || 0), 0);
   const spByInv = {}; salesPays.forEach((p) => { if (p.salesInvoiceId) spByInv[p.salesInvoiceId] = (spByInv[p.salesInvoiceId] || 0) + Number(p.amountPiasters || 0); });
   const ppByInv = {}; purchPays.forEach((p) => { if (p.purchaseInvoiceId) ppByInv[p.purchaseInvoiceId] = (ppByInv[p.purchaseInvoiceId] || 0) + Number(p.amountPiasters || 0); });
-  const custDebtTotal = salesInvs.filter((s) => s.status === 'posted').reduce((a, s) => a + remainingOf(s, spByInv), 0);
-  const supDebtTotal = purchInvs.filter((s) => s.status === 'posted').reduce((a, s) => a + remainingOf(s, ppByInv), 0);
+  const openingSum = (list) => list.reduce((a, c) => a + Math.max(0, Number(c.openingBalancePiasters || 0)), 0);
+  const custDebtTotal = salesInvs.filter((s) => s.status === 'posted').reduce((a, s) => a + remainingOf(s, spByInv), 0) + openingSum(customers);
+  const supDebtTotal = purchInvs.filter((s) => s.status === 'posted').reduce((a, s) => a + remainingOf(s, ppByInv), 0) + openingSum(suppliers);
   $('page').innerHTML = `
     <h2 class="page-title">💰 الحسابات</h2>
     <div class="kpi-grid">
@@ -1287,7 +1291,7 @@ async function renderReports() {
 let contactKind = 'customers';
 async function renderContacts(kind) {
   contactKind = kind;
-  const list = await loadCollection(kind);
+  const [list, debts] = await Promise.all([loadCollection(kind), loadDebtsData(kind)]);
   const isCust = kind === 'customers';
   $('page').innerHTML = `
     <h2 class="page-title">${isCust ? '👥 إدارة العملاء' : '🤝 إدارة الموردين'}</h2>
@@ -1295,7 +1299,7 @@ async function renderContacts(kind) {
     <div class="card">
     ${list.length ? `<table><tr><th>الاسم</th><th>الهاتف</th><th>الرصيد الحالي</th><th>الحالة</th></tr>
       ${list.map((c) => `<tr><td>${esc(c.name_ar)}${demoBadge(c)}</td><td dir="ltr">${esc(c.phone || '')}</td>
-      <td class="num">${fmtEGP(c.currentBalancePiasters)}</td>
+      <td class="num">${fmtEGP(contactOwed(c, debts.byContact[c.id] || []))}</td>
       <td><span class="badge ${c.isActive === false ? 'bad' : 'ok'}">${c.isActive === false ? 'موقوف' : 'نشط'}</span></td></tr>`).join('')}</table>`
     : emptyState(isCust ? 'لا يوجد عملاء مسجلون بعد.' : 'لا يوجد موردون مسجلون بعد.')}</div>`;
   $('add-contact-btn').addEventListener('click', () => openContactForm());
@@ -1573,6 +1577,14 @@ function remainingOf(inv, payByInv) {
   return Math.max(0, Number(inv.totalPiasters || 0) - Number(inv.paidPiasters || 0) - (payByInv[inv.id] || 0));
 }
 function paidOf(inv, payByInv) { return Number(inv.totalPiasters || 0) - remainingOf(inv, payByInv); }
+// مديونية جهة واحدة = المتبقي المشتق من فواتيرها المفتوحة + رصيدها الافتتاحي.
+// الرصيد المخزّن currentBalancePiasters يساوي هذا المجموع عندما يكون محدَّثاً،
+// لكن بيانات العينة وبعض المسارات القديمة تركته قديماً (مثلاً مورد NGK كان صفراً
+// رغم مديونية 16,694) — فالمشتق + الافتتاحي هو المرجع الوحيد لكل العروض.
+function contactOwed(c, openList) {
+  const derived = (openList || []).reduce((a, x) => a + x.remaining, 0);
+  return derived + Math.max(0, Number((c || {}).openingBalancePiasters || 0));
+}
 function dueDateOf(inv) {
   if (inv.dueDate) return tsToDate(inv.dueDate);
   return new Date(tsToDate(inv.date || inv.createdAt).getTime() + 30 * 24 * 3600 * 1000);
@@ -1676,16 +1688,24 @@ async function renderDebts(kind, selectedId = null) {
   const { isCust, contacts, open, byContact } = await loadDebtsData(kind);
   const title = isCust ? '💳 مديونيات العملاء' : '🧾 مديونيات الموردين';
   const who = isCust ? 'عميل' : 'مورد';
-  const totalDebt = open.reduce((a, x) => a + x.remaining, 0);
   const rows = contacts
     .map((c) => {
       const list = byContact[c.id] || [];
-      const debt = list.reduce((a, x) => a + x.remaining, 0);
-      const stored = Number(c.currentBalancePiasters || 0);
-      return { c, list, debt: list.length ? debt : stored, openingOnly: !list.length && stored > 0 };
+      const debt = contactOwed(c, list);
+      return { c, list, debt, openingOnly: !list.length && debt > 0 };
     })
-    .filter((r) => r.debt > 0)
-    .sort((a, b) => b.debt - a.debt);
+    .filter((r) => r.debt > 0);
+  // فواتير بلا جهة (حُذفت الجهة وبقيت فواتيرها): تظهر صفاً مستقلاً حتى لا يختفي
+  // مبلغها من الجدول بينما يبقى محسوباً في الإجمالي
+  for (const id of Object.keys(byContact)) {
+    if (contacts.some((c) => c.id === id)) continue;
+    const list = byContact[id];
+    const debt = list.reduce((a, x) => a + x.remaining, 0);
+    if (debt > 0) rows.push({ c: { id, name_ar: 'جهة محذوفة', phone: '—' }, list, debt, openingOnly: false, orphan: true });
+  }
+  rows.sort((a, b) => b.debt - a.debt);
+  // الإجمالي = مجموع الصفوف الظاهرة تماماً (مشتق + افتتاحي + بلا جهة) — بلا أي فرق
+  const totalDebt = rows.reduce((a, r) => a + r.debt, 0);
   $('page').innerHTML = `
     <h2 class="page-title">${title}</h2>
     <p class="page-sub">كل ${who} ورصيده المدين من الفواتير المفتوحة — المتبقي = الإجمالي − المدفوع عند الإنشاء − مجموع الدفعات المسجلة. اضغط على أي ${who} لعرض فواتيره ودفعاته وتسديد جزء.</p>
@@ -1697,9 +1717,9 @@ async function renderDebts(kind, selectedId = null) {
     </div>
     <div class="card"><h3>${title}</h3>
     ${rows.length ? `<table><tr><th>${who}</th><th>الهاتف</th><th>فواتير مفتوحة</th><th>أقرب استحقاق</th><th>المديونية</th><th></th></tr>
-      ${rows.map(({ c, list, debt, openingOnly }) => {
+      ${rows.map(({ c, list, debt, openingOnly, orphan }) => {
         const nearest = list.length ? new Date(Math.min(...list.map((x) => dueDateOf(x.inv).getTime()))) : null;
-        return `<tr><td>${esc(c.name_ar)}${demoBadge(c)}${openingOnly ? ' <span class="badge">رصيد افتتاحي</span>' : ''}</td>
+        return `<tr><td>${esc(c.name_ar)}${demoBadge(c)}${openingOnly ? ' <span class="badge">رصيد افتتاحي</span>' : ''}${orphan ? ' <span class="badge warn">جهة محذوفة</span>' : ''}</td>
         <td dir="ltr">${esc(c.phone || '')}</td><td class="num">${list.length || '—'}</td>
         <td>${nearest ? nearest.toLocaleDateString('ar-EG') : '—'}</td>
         <td class="num">${fmtEGP(debt)}</td>
@@ -1714,10 +1734,12 @@ async function renderDebts(kind, selectedId = null) {
 // --- تفاصيل مديونية جهة: فواتير مفتوحة + سجل دفعات + تسديد جزء ---
 async function renderDebtDetail(kind, contactId) {
   const { isCust, contacts, payments, payByInv, byContact, posted } = await loadDebtsData(kind);
-  const c = contacts.find((x) => x.id === contactId);
-  if (!c) { $('page').innerHTML = emptyState('تعذّر العثور على هذه الجهة.'); return; }
+  const found = contacts.find((x) => x.id === contactId);
+  // الجهة محذوفة وبقيت فواتيرها: نعرض فواتيرها ودفعاتها بلا تسجيل مديونية جديدة عليها
+  const c = found || { id: contactId, name_ar: 'جهة محذوفة', phone: '', openingBalancePiasters: 0 };
   const list = byContact[contactId] || [];
-  const debt = list.reduce((a, x) => a + x.remaining, 0);
+  const debt = contactOwed(c, list);
+  const opening = Math.max(0, Number(c.openingBalancePiasters || 0));
   // التفاصيل لكل فاتورة مفتوحة: نص محفوظ لليدوية، وملخص أصناف تلقائي للفواتير العادية
   await loadInvoiceItems(list.map((x) => x.inv), isCust ? 'salesInvoices' : 'purchaseInvoices');
   list.forEach((x) => { x.details = debtDetailsText(x.inv, invoiceItemsCache[x.inv.id] || []); });
@@ -1736,7 +1758,8 @@ async function renderDebtDetail(kind, contactId) {
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(myPayments.reduce((a, p) => a + Number(p.amountPiasters || 0), 0))}<span class="unit">ج.م</span></div><div class="label">إجمالي الدفعات المسجلة</div></div><div class="ico">💰</div></div>
     </div>
     <div class="toolbar"><button class="btn small" id="print-statement-btn">🖨️ طباعة كشف الحساب</button>
-    <button class="btn small" id="debt-add-btn">➕ تسجيل مديونية</button></div>
+    ${found ? '<button class="btn small" id="debt-add-btn">➕ تسجيل مديونية</button>' : ''}</div>
+    ${opening > 0 ? `<p class="note">من المديونية أعلاه رصيد افتتاحي: ${fmtEGP(opening)} — والباقي من الفواتير المفتوحة أدناه.</p>` : ''}
     <div class="card"><h3>الفواتير المفتوحة</h3>
     ${list.length ? `<table><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th></th></tr>
       ${list.sort((a, b) => dueDateOf(a.inv) - dueDateOf(b.inv)).map((x) => {
@@ -1768,7 +1791,8 @@ async function renderDebtDetail(kind, contactId) {
       }).join('')}</table>`
     : emptyState('لا توجد دفعات مسجلة بعد لهذه الجهة.')}</div>`;
   $('back-debts').addEventListener('click', () => renderDebts(kind));
-  $('debt-add-btn').addEventListener('click', () => openManualDebtForm(kind, c, () => renderDebtDetail(kind, contactId)));
+  const dab = $('debt-add-btn');
+  if (dab) dab.addEventListener('click', () => openManualDebtForm(kind, c, () => renderDebtDetail(kind, contactId)));
   $('print-statement-btn').addEventListener('click', () => printStatement(kind, c, list, myPayments, invById));
   document.querySelectorAll('[data-pay-inv]').forEach((b) => b.addEventListener('click', () => {
     const inv = list.find((x) => x.inv.id === b.dataset.payInv);
@@ -1816,9 +1840,9 @@ function openPayForm(kind, contact, inv, maxRemaining, onDone) {
     if (amount > maxRemaining) { showError($('pay-error'), `المبلغ يتجاوز المتبقي على الفاتورة (${fmtEGP(maxRemaining)}).`); return; }
     $('pay-submit').disabled = true; $('pay-submit').textContent = 'جارٍ الحفظ...';
     try {
-      await recordPayment(kind, contact.id, inv, amount, dateTs, method, notes);
+      const cashMsg = await recordPayment(kind, contact.id, inv, amount, dateTs, method, notes);
       area.innerHTML = '';
-      alert(`تم تسجيل دفعة ${fmtEGP(amount)} (${payMethodLabel(method)}) — المتبقي الآن ${fmtEGP(maxRemaining - amount)}.`);
+      showToast(`✅ تم تسجيل دفعة ${fmtEGP(amount)} (${payMethodLabel(method)}) — المتبقي الآن ${fmtEGP(maxRemaining - amount)}.${cashMsg ? ' ' + cashMsg : ''}`);
       await onDone();
     } catch (err) {
       showError($('pay-error'), firestoreErrorMessage(err));
@@ -1922,19 +1946,25 @@ async function recordPayment(kind, contactId, inv, amountPiasters, dateTs, metho
     batch.update(contactRef, { currentBalancePiasters: Math.max(0, cur - amountPiasters), updatedAt: serverTimestamp() });
   }
   await batch.commit();
+  // يرجع وصفاً بأثر الدفعة على الصندوق/البنك حتى يظهر للمستخدم فوراً
+  // (تحذير يبقى منبثقاً لأنه يعني أن الصندوق لم يتحرك)
   const cashNote = await applyCashMovement(method, amountPiasters, isCust ? 1 : -1);
-  if (cashNote) alert(cashNote);
+  if (cashNote) { alert(cashNote); return cashNote; }
+  if (method === 'adjustment') return '';
+  const dest = (method === 'bank_transfer' || method === 'visa' || method === 'instapay')
+    ? 'الحساب البنكي الرئيسي' : 'الصندوق الرئيسي';
+  return isCust ? `أُضيف ${fmtEGP(amountPiasters)} إلى «${dest}».` : `خُصم ${fmtEGP(amountPiasters)} من «${dest}».`;
 }
 
 // --- تسجيل مديونية يدوية (من غير فاتورة منتجات) ---
 // تُسجَّل كفاتورة مفتوحة isManualDebt (بلا بنود وبلا حركة مخزون) فيرجع رصيدها
 // في المديونيات والدفعات والطباعة تلقائياً، مع زيادة رصيد الجهة فوراً.
 let mdKind = 'customers', mdContact = null, mdContacts = [], mdOnDone = null;
-function contactSummaryHTML(c) {
+function contactSummaryHTML(c, owed) {
   return `<div class="list-row"><span>الاسم</span><b>${esc(c.name_ar)}</b></div>
   <div class="list-row"><span>الهاتف</span><b dir="ltr">${esc(c.phone || '—')}</b></div>
   <div class="list-row"><span>العنوان</span><b>${esc(c.address_ar || '—')}</b></div>
-  <div class="list-row"><span>الرصيد الحالي</span><b>${fmtEGP(c.currentBalancePiasters)}</b></div>`;
+  <div class="list-row"><span>الرصيد الحالي</span><b>${fmtEGP(owed)}</b></div>`;
 }
 async function openManualDebtForm(kind, contact, onDone) {
   mdKind = kind; mdContact = contact || null; mdOnDone = onDone || null;
@@ -1944,19 +1974,22 @@ async function openManualDebtForm(kind, contact, onDone) {
   $('md-amount').value = ''; $('md-reason').value = ''; $('md-details').value = '';
   hideError($('md-error'));
   const picker = $('md-contact-picker'), summary = $('md-contact-summary');
+  // الرصيد المعروض في الملخص مشتق من الفواتير المفتوحة + الافتتاحي (وليس المخزّن)
+  const { byContact: mdByContact } = await loadDebtsData(kind);
+  const mdOwed = (c) => contactOwed(c, mdByContact[c.id] || []);
   if (mdContact) {
     picker.style.display = 'none';
-    summary.innerHTML = contactSummaryHTML(mdContact);
+    summary.innerHTML = contactSummaryHTML(mdContact, mdOwed(mdContact));
   } else {
     picker.style.display = '';
     mdContacts = await loadCollection(kind);
     $('md-contact-select').innerHTML = mdContacts.map((c) => `<option value="${c.id}">${esc(c.name_ar)} — ${esc(c.phone || '')}</option>`).join('');
     const first = mdContacts[0] || null;
     mdContact = first;
-    summary.innerHTML = first ? contactSummaryHTML(first) : emptyState('لا يوجد عملاء/موردون بعد — أضف جهة أولاً.');
+    summary.innerHTML = first ? contactSummaryHTML(first, mdOwed(first)) : emptyState('لا يوجد عملاء/موردون بعد — أضف جهة أولاً.');
     $('md-contact-select').onchange = (e) => {
       mdContact = mdContacts.find((c) => c.id === e.target.value) || null;
-      if (mdContact) summary.innerHTML = contactSummaryHTML(mdContact);
+      if (mdContact) summary.innerHTML = contactSummaryHTML(mdContact, mdOwed(mdContact));
     };
   }
   $('manual-debt-modal').classList.remove('hidden');
