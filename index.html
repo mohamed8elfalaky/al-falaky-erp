@@ -6,7 +6,7 @@
 <title>الفلكي لقطع غيار السيارات — Al-Falaky Smart ERP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20261125g">
+<link rel="stylesheet" href="styles.css?v=20261125h">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -172,6 +172,7 @@
       <label>المبلغ (جنيه) *</label><input id="md-amount" type="number" step="0.01" min="0.01" required placeholder="مثال: 1500">
       <label>التاريخ *</label><input id="md-date" type="date" required>
       <label>البيان / سبب المديونية *</label><input id="md-reason" required placeholder="مثال: بضاعة آجلة — فاتورة ورقية ١٢٣">
+      <label>تفاصيل — هو خد إيه؟ *</label><textarea id="md-details" rows="2" required placeholder="مثال: فلتر زيت تويوتا × 2، تيل فرامل × 1، بوجيهات NGK × 4"></textarea>
       <button class="btn" type="submit" id="md-save">✅ تسجيل المديونية</button>
       <button class="btn secondary" type="button" id="manual-debt-cancel-btn">إلغاء</button>
       <div class="error" id="md-error"></div>
@@ -210,6 +211,6 @@
 
 <!-- منطقة الطباعة: تُملأ بمحتوى الفاتورة/كشف الحساب عند الطباعة فقط -->
 <div id="print-area"></div>
-<script type="module" src="app.js?v=20261125g"></script>
+<script type="module" src="app.js?v=20261125h"></script>
 </body>
 </html>

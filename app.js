@@ -414,13 +414,20 @@ function productStock(p) { return balancesCache[p.id] ?? null; } // null = لا 
 // بنود الفواتير — تُحمّل مرة واحدة بالتوازي وتُحفظ في الذاكرة طوال الجلسة
 // (بدل قراءة متسلسلة لبنود كل فاتورة على حدة، اللي كانت تعلّق لوحة التحكم)
 let invoiceItemsCache = {}; // invoiceId -> [items]
-async function loadInvoiceItems(invoices) {
+async function loadInvoiceItems(invoices, coll = 'salesInvoices') {
   const missing = invoices.filter((inv) => !(inv.id in invoiceItemsCache));
   if (missing.length) {
-    const snaps = await Promise.all(missing.map((inv) => getDocs(collection(db, 'salesInvoices', inv.id, 'items'))));
+    const snaps = await Promise.all(missing.map((inv) => getDocs(collection(db, coll, inv.id, 'items'))));
     snaps.forEach((snap, i) => { invoiceItemsCache[missing[i].id] = snap.docs.map((d) => d.data()); });
   }
   return invoiceItemsCache;
+}
+// نص التفاصيل لمديونية: للمديونية اليدوية النص المحفوظ وقت التسجيل،
+// ولفاتورة عادية ملخص أصنافها (أسماء المنتجات والكميات) — يتعبى تلقائياً
+function debtDetailsText(inv, items) {
+  if (inv.isManualDebt) return (inv.manualDetails || inv.manualReason || '').trim();
+  const list = (items || []).filter((i) => i && (i.productName_ar || i.productName));
+  return list.map((i) => `${i.productName_ar || i.productName} × ${fmtNum(i.quantity || 1)}`).join('، ');
 }
 
 async function renderDashboard() {
@@ -1673,6 +1680,9 @@ async function renderDebtDetail(kind, contactId) {
   if (!c) { $('page').innerHTML = emptyState('تعذّر العثور على هذه الجهة.'); return; }
   const list = byContact[contactId] || [];
   const debt = list.reduce((a, x) => a + x.remaining, 0);
+  // التفاصيل لكل فاتورة مفتوحة: نص محفوظ لليدوية، وملخص أصناف تلقائي للفواتير العادية
+  await loadInvoiceItems(list.map((x) => x.inv), isCust ? 'salesInvoices' : 'purchaseInvoices');
+  list.forEach((x) => { x.details = debtDetailsText(x.inv, invoiceItemsCache[x.inv.id] || []); });
   const myPayments = payments
     .filter((p) => (isCust ? p.customerId : p.supplierId) === contactId)
     .sort((a, b) => tsToDate(b.date || b.createdAt) - tsToDate(a.date || a.createdAt));
@@ -1691,9 +1701,10 @@ async function renderDebtDetail(kind, contactId) {
     <button class="btn small" id="debt-add-btn">➕ تسجيل مديونية</button></div>
     <div class="card"><h3>الفواتير المفتوحة</h3>
     ${list.length ? `<table><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th></th></tr>
-      ${list.sort((a, b) => dueDateOf(a.inv) - dueDateOf(b.inv)).map(({ inv, remaining, paid }) => {
+      ${list.sort((a, b) => dueDateOf(a.inv) - dueDateOf(b.inv)).map((x) => {
+        const { inv, remaining, paid } = x;
         const st = payStatusOf(Number(inv.totalPiasters || 0), paid);
-        return `<tr><td dir="ltr">${esc(inv.invoiceNumber || inv.id)}${demoBadge(inv)}${inv.isManualDebt ? ' <span class="badge">مديونية يدوية</span>' : ''}</td>
+        return `<tr><td dir="ltr">${esc(inv.invoiceNumber || inv.id)}${demoBadge(inv)}${inv.isManualDebt ? ' <span class="badge">مديونية يدوية</span>' : ''}${x.details ? `<div class="inv-details" dir="rtl">📦 ${esc(x.details)}</div>` : ''}</td>
         <td>${tsToDate(inv.date || inv.createdAt).toLocaleDateString('ar-EG')}</td>
         <td>${dueDateOf(inv).toLocaleDateString('ar-EG')}</td>
         <td class="num">${fmtEGP(inv.totalPiasters)}</td><td class="num">${fmtEGP(paid)}</td>
@@ -1832,7 +1843,7 @@ function openAdjustForm(kind, contact, inv, oldRemaining, onDone) {
           subtotalPiasters: diff, discountPiasters: 0, taxPiasters: 0,
           isManualDebt: true, isAdjustment: true, adjustedInvoiceId: inv.id,
           oldRemainingPiasters: oldRemaining, newRemainingPiasters: newAmount,
-          manualReason: reason, paymentMethod: 'credit',
+          manualReason: reason, manualDetails: 'قيد تسوية — ' + reason, paymentMethod: 'credit',
           createdBy: me.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
         });
         const snap = await getDoc(doc(db, kind, contact.id));
@@ -1892,7 +1903,7 @@ async function openManualDebtForm(kind, contact, onDone) {
   const isCust = kind === 'customers';
   $('manual-debt-title').textContent = `➕ تسجيل مديونية — ${isCust ? 'عميل' : 'مورد'}`;
   $('md-date').value = dateInputVal(new Date());
-  $('md-amount').value = ''; $('md-reason').value = '';
+  $('md-amount').value = ''; $('md-reason').value = ''; $('md-details').value = '';
   hideError($('md-error'));
   const picker = $('md-contact-picker'), summary = $('md-contact-summary');
   if (mdContact) {
@@ -1918,9 +1929,11 @@ $('manual-debt-form').addEventListener('submit', async (e) => {
   if (!mdContact) { showError($('md-error'), 'اختر العميل / المورد أولاً.'); return; }
   const amount = toPiasters($('md-amount').value);
   const reason = $('md-reason').value.trim();
+  const details = $('md-details').value.trim();
   const dateTs = parseDateInput($('md-date').value) || Timestamp.fromDate(new Date());
   if (!amount || amount <= 0) { showError($('md-error'), 'أدخل مبلغاً أكبر من صفر.'); return; }
   if (!reason) { showError($('md-error'), 'اكتب البيان / سبب المديونية.'); return; }
+  if (!details) { showError($('md-error'), 'اكتب التفاصيل — هو خد إيه؟ (البضاعة/المنتجات).'); return; }
   const isCust = mdKind === 'customers';
   $('md-save').disabled = true; $('md-save').textContent = 'جارٍ الحفظ...';
   try {
@@ -1934,7 +1947,7 @@ $('manual-debt-form').addEventListener('submit', async (e) => {
       invoiceNumber: num, date: dateTs, dueDate: Timestamp.fromDate(due),
       status: 'posted', totalPiasters: amount, paidPiasters: 0, remainingPiasters: amount,
       subtotalPiasters: amount, discountPiasters: 0, taxPiasters: 0,
-      isManualDebt: true, manualReason: reason, paymentMethod: 'credit',
+      isManualDebt: true, manualReason: reason, manualDetails: details, paymentMethod: 'credit',
       createdBy: me.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
     });
     const snap = await getDoc(doc(db, mdKind, mdContact.id));
@@ -2300,7 +2313,7 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
       <div><span>الهاتف:</span> <b dir="ltr">${esc(contact ? (contact.phone || '—') : '—')}</b></div>
       <div><span>العنوان:</span> <b>${esc(contact ? (contact.address_ar || '—') : '—')}</b></div>
     </div>
-    ${inv.isManualDebt ? `<div class="inv-notes">مديونية مسجلة يدوياً (بدون بنود منتجات) — البيان: <b>${esc(inv.manualReason || '—')}</b>${inv.isAdjustment ? ` — تعديل للمبلغ من <b>${fmtEGP(inv.oldRemainingPiasters)}</b> إلى <b>${fmtEGP(inv.newRemainingPiasters)}</b>` : ''}</div>` : `
+    ${inv.isManualDebt ? `<div class="inv-notes">مديونية مسجلة يدوياً (بدون بنود منتجات) — البيان: <b>${esc(inv.manualReason || '—')}</b>${inv.manualDetails ? ` — التفاصيل: <b>${esc(inv.manualDetails)}</b>` : ''}${inv.isAdjustment ? ` — تعديل للمبلغ من <b>${fmtEGP(inv.oldRemainingPiasters)}</b> إلى <b>${fmtEGP(inv.newRemainingPiasters)}</b>` : ''}</div>` : `
     <table class="inv-table">
       <tr><th>#</th><th>الصنف</th><th>رقم القطعة</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr>
       ${items.map((it, i) => `<tr>
@@ -2393,11 +2406,12 @@ function printStatement(kind, contact, openList, myPayments, invById) {
       <div><span>المديونية المفتوحة:</span> <b>${fmtEGP(totalDebt)}</b></div>
     </div>
     <h3 style="color:#111;margin:14px 0 8px">الفواتير المفتوحة</h3>
-    ${openList.length ? `<table class="inv-table"><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr>
-      ${openList.map(({ inv, remaining, paid }) => `<tr>
+    ${openList.length ? `<table class="inv-table"><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>التفاصيل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr>
+      ${openList.map(({ inv, remaining, paid, details }) => `<tr>
         <td dir="ltr">${esc(inv.invoiceNumber || inv.id)}</td>
         <td>${tsToDate(inv.date || inv.createdAt).toLocaleDateString('ar-EG')}</td>
         <td>${dueDateOf(inv).toLocaleDateString('ar-EG')}</td>
+        <td style="text-align:right">${esc(details || (inv.isManualDebt ? (inv.manualDetails || inv.manualReason || '') : ''))}</td>
         <td class="num">${fmtEGP(inv.totalPiasters)}</td><td class="num">${fmtEGP(paid)}</td><td class="num">${fmtEGP(remaining)}</td></tr>`).join('')}</table>`
     : '<p>لا توجد فواتير مفتوحة.</p>'}
     <h3 style="color:#111;margin:14px 0 8px">سجل الدفعات</h3>
