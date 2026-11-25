@@ -146,7 +146,7 @@ body.sidebar-hidden .sidebar { display: none; }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .content { padding: 20px 22px; max-width: 1280px; width: 100%; margin: 0 auto; flex: 1; }
-.page-title { font-size: 22px; margin-bottom: 4px; }
+.page-title { font-size: 22px; margin-bottom: 4px; scroll-margin-top: 90px; }
 .page-sub { color: var(--muted); font-size: 14px; margin-bottom: 18px; }
 
 /* ---------- البانر ---------- */
@@ -177,7 +177,7 @@ body.sidebar-hidden .sidebar { display: none; }
 .kpi { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .kpi .kpi-text { text-align: right; min-width: 0; }
 .kpi .ico { font-size: 30px; flex-shrink: 0; opacity: 0.95; }
-.kpi .value { font-size: 25px; font-weight: 800; direction: ltr; text-align: right; line-height: 1.2; white-space: nowrap; }
+.kpi .value, .debt-card .value { font-size: clamp(18px, 1.6vw, 25px); font-weight: 800; direction: ltr; text-align: right; line-height: 1.2; white-space: nowrap; }
 .kpi .value .unit { font-size: 13px; color: var(--muted); font-weight: 600; margin-inline-start: 4px; }
 .kpi .label { color: var(--muted); font-size: 13.5px; margin-top: 2px; }
 .kpi .delta { font-size: 13px; font-weight: 700; margin-top: 4px; }
@@ -363,7 +363,9 @@ th { color: var(--muted); font-size: 13px; }
 
 /* ---------- المديونيات والفواتير والدفعات (إضافة) ---------- */
 .debt-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
-.debt-card { cursor: pointer; }
+.debt-card { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.debt-card .kpi-text { min-width: 0; }
+.debt-card .ico { font-size: 30px; flex-shrink: 0; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .form-grid label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .pay-form input, .pay-form select { width: 100%; }
@@ -440,6 +442,8 @@ body.mobile-view .inv-sheet { padding: 18px; }
 body.mobile-view .inv-head { flex-direction: column; }
 body.mobile-view .topbar { flex-wrap: wrap; }
 body.mobile-view .topbar .search-box { order: 3; flex-basis: 100%; }
+body.mobile-view .topbar .search-box input { flex: 1; min-width: 0; }
+body.mobile-view .topbar .search-box .btn.scan { flex: 0 0 auto; white-space: nowrap; padding: 8px 12px; font-size: 14px; min-height: 40px; }
 body.mobile-view .user-meta { display: none; }
 body.mobile-view .donut-wrap { flex-direction: column; }
 

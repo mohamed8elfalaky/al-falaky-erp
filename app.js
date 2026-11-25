@@ -315,6 +315,7 @@ function applyViewMode(mode) {
   const mobile = mode === 'mobile';
   document.body.classList.toggle('mobile-view', mobile);
   if (mobile) document.body.classList.add('sidebar-hidden'); // الدرج مغلق افتراضياً في وضع الموبايل
+  else document.body.classList.remove('sidebar-hidden'); // الرجوع للكمبيوتر يُظهر القائمة من جديد
   const btn = $('view-toggle-btn');
   if (btn) btn.textContent = mobile ? '🖥️ عرض الكمبيوتر' : '📱 عرض الموبايل';
   try { localStorage.setItem(VIEW_MODE_KEY, mobile ? 'mobile' : 'desktop'); } catch (e) { /* تجاهل */ }
@@ -338,6 +339,7 @@ document.addEventListener('click', (e) => {
 async function go(page) {
   if (!canSee(page)) { $('page').innerHTML = emptyState('ليس لديك صلاحية لعرض هذه الصفحة.'); return; }
   currentPage = page;
+  window.scrollTo(0, 0); // العنوان يظهر من فوق دائماً ولا يختفي تحت الهيدر الثابت
   document.querySelectorAll('.nav-item[data-page]').forEach((b) =>
     b.classList.toggle('active', b.dataset.page === page));
   const renderers = { dashboard: renderDashboard, sales: renderPOS, purchases: renderPurchases,
@@ -644,7 +646,10 @@ async function renderDashboard() {
       const meta = chart.getDatasetMeta(0); if (!meta.data[0]) return;
       const { x, y } = meta.data[0]; const ctx = chart.ctx;
       ctx.save(); ctx.textAlign = 'center'; ctx.fillStyle = '#e6edf3';
-      ctx.font = '800 19px Cairo, sans-serif'; ctx.fillText(donutTotal, x, y - 2);
+      let fs = 19; ctx.font = `800 ${fs}px Cairo, sans-serif`;
+      const maxW = (meta.data[0].innerRadius || 50) * 1.7;
+      while (fs > 11 && ctx.measureText(donutTotal).width > maxW) { fs -= 1; ctx.font = `800 ${fs}px Cairo, sans-serif`; }
+      ctx.fillText(donutTotal, x, y - 2);
       ctx.font = '600 12px Cairo, sans-serif'; ctx.fillStyle = '#8b98a9'; ctx.fillText('ج.م', x, y + 16); ctx.restore();
     } };
     charts.cat = new Chart($('chart-cat'), { type: 'doughnut',
