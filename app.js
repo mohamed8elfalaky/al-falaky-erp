@@ -1518,7 +1518,7 @@ async function renderHelp() {
 // ============================================================================
 const PAY_METHODS = [
   ['cash', '💵 نقدي'], ['bank_transfer', '🏦 تحويل بنكي'], ['vodafone_cash', '📱 فودافون كاش'],
-  ['cheque', '🧾 شيك'], ['visa', '💳 فيزا'], ['instapay', '⚡ إنستاباي']
+  ['cheque', '🧾 شيك'], ['visa', '💳 فيزا'], ['instapay', '⚡ إنستاباي'], ['adjustment', '⚖️ تسوية/تعديل']
 ];
 const payMethodLabel = (m) => (PAY_METHODS.find(([v]) => v === m) || [null, m || '—'])[1];
 const payStatusOf = (total, paid) => paid >= total ? 'paid' : paid > 0 ? 'partial' : 'credit';
@@ -1556,6 +1556,7 @@ function canCreateInvoice(kind) {
 // --- أثر الدفعة على الصندوق/البنك (أفضل جهد — لا يفشل تسجيل الدفعة) ---
 async function applyCashMovement(method, amountPiasters, direction) {
   if (!amountPiasters || amountPiasters <= 0) return '';
+  if (method === 'adjustment') return ''; // قيد تسوية: تعديل رصيد فقط — لا يحرّك الصندوق ولا البنك
   if (method === 'vodafone_cash' || method === 'cheque') {
     return 'ملاحظة: طريقة الدفع (فودافون كاش / شيك) لا تؤثر على رصيد الصندوق — سُجّلت الدفعة وخصمت من المديونية فقط.';
   }
@@ -1700,6 +1701,7 @@ async function renderDebtDetail(kind, contactId) {
         <td><span class="badge ${payStatusBadgeCls(st)}">${payStatusLabel(st)}</span></td>
         <td style="white-space:nowrap">
           <button class="btn small" data-pay-inv="${inv.id}" data-pay-max="${remaining}">💰 تسديد جزء</button>
+          <button class="btn small secondary" data-adj-inv="${inv.id}" data-adj-old="${remaining}">✏️ تعديل المبلغ</button>
           <button class="btn small secondary" data-view-inv="${inv.id}">عرض / طباعة</button>
         </td></tr>`;
       }).join('')}</table>`
@@ -1722,6 +1724,10 @@ async function renderDebtDetail(kind, contactId) {
   document.querySelectorAll('[data-pay-inv]').forEach((b) => b.addEventListener('click', () => {
     const inv = list.find((x) => x.inv.id === b.dataset.payInv);
     if (inv) openPayForm(kind, c, inv.inv, Number(b.dataset.payMax), () => renderDebtDetail(kind, contactId));
+  }));
+  document.querySelectorAll('[data-adj-inv]').forEach((b) => b.addEventListener('click', () => {
+    const inv = list.find((x) => x.inv.id === b.dataset.adjInv);
+    if (inv) openAdjustForm(kind, c, inv.inv, Number(b.dataset.adjOld), () => renderDebtDetail(kind, contactId));
   }));
   document.querySelectorAll('[data-view-inv]').forEach((b) => b.addEventListener('click', () =>
     renderInvoiceDetail(isCust ? 'sales' : 'purchase', b.dataset.viewInv)));
@@ -1772,8 +1778,82 @@ function openPayForm(kind, contact, inv, maxRemaining, onDone) {
   });
 }
 
+// --- تعديل المبلغ المستحق على فاتورة مفتوحة (قيد تسوية — بلا تعديل لأي فاتورة مرحّلة) ---
+// نقصان: دفعة تسوية بقيمة الفرق (لا تحرّك الصندوق/البنك). زيادة: فاتورة مديونية يدوية
+// جديدة بقيمة الفرق (DEBT-ADJ) مربوطة بالفاتورة الأصلية. في الحالتين يُحفظ
+// المبلغ القديم والجديد والسبب والتاريخ في المستند نفسه.
+function openAdjustForm(kind, contact, inv, oldRemaining, onDone) {
+  const area = $('pay-form-area');
+  if (!area) return;
+  const today = dateInputVal(new Date());
+  area.innerHTML = `
+    <div class="pay-form card" style="margin-top:14px;border-color:rgba(240,180,41,.5)">
+      <h3>✏️ تعديل المبلغ المستحق — فاتورة ${esc(inv.invoiceNumber || inv.id)}</h3>
+      <p class="note" style="text-align:right">المتبقي الحالي على هذه الفاتورة: <b>${fmtEGP(oldRemaining)}</b> — أدخل المبلغ الجديد المتفق عليه. النقصان يُسجَّل كدفعة تسوية، والزيادة كمديونية إضافية مربوطة بنفس الفاتورة. لا تُعدَّل الفاتورة الأصلية أبداً.</p>
+      <div class="form-grid">
+        <div><label>المبلغ الجديد المستحق (جنيه) *</label><input id="adj-amount" type="number" step="0.01" min="0" value="${(oldRemaining / 100).toFixed(2)}"></div>
+        <div><label>تاريخ التسوية *</label><input id="adj-date" type="date" value="${today}"></div>
+        <div><label>سبب التعديل *</label><input id="adj-reason" placeholder="مثال: اتفاق جديد مع العميل / تصحيح مبلغ"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn" id="adj-submit" style="width:auto">✅ حفظ التعديل</button>
+        <button class="btn secondary" id="adj-cancel" style="width:auto" type="button">إلغاء</button>
+      </div>
+      <div class="error" id="adj-error"></div>
+    </div>`;
+  $('adj-cancel').addEventListener('click', () => { area.innerHTML = ''; });
+  $('adj-submit').addEventListener('click', async () => {
+    hideError($('adj-error'));
+    const newAmount = toPiasters($('adj-amount').value);
+    const reason = $('adj-reason').value.trim();
+    const dateTs = parseDateInput($('adj-date').value) || Timestamp.fromDate(new Date());
+    if (isNaN(newAmount) || newAmount < 0) { showError($('adj-error'), 'أدخل مبلغاً صحيحاً (صفر أو أكثر).'); return; }
+    if (newAmount === oldRemaining) { showError($('adj-error'), 'المبلغ الجديد يساوي المتبقي الحالي — لا يوجد تعديل.'); return; }
+    if (!reason) { showError($('adj-error'), 'اكتب سبب التعديل.'); return; }
+    $('adj-submit').disabled = true; $('adj-submit').textContent = 'جارٍ الحفظ...';
+    try {
+      const isCust = kind === 'customers';
+      if (newAmount < oldRemaining) {
+        const diff = oldRemaining - newAmount;
+        await recordPayment(kind, contact.id, inv, diff, dateTs, 'adjustment', reason,
+          { isAdjustment: true, oldRemainingPiasters: oldRemaining, newRemainingPiasters: newAmount, reason });
+        alert(`تم تعديل المبلغ: من ${fmtEGP(oldRemaining)} إلى ${fmtEGP(newAmount)} (نقصان ${fmtEGP(diff)} كدفعة تسوية).`);
+      } else {
+        const diff = newAmount - oldRemaining;
+        const num = 'DEBT-ADJ-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(Date.now()).slice(-6);
+        const due = new Date(dateTs.toDate().getTime() + 30 * 86400000);
+        const batch = writeBatch(db);
+        const invRef = doc(collection(db, isCust ? 'salesInvoices' : 'purchaseInvoices'));
+        batch.set(invRef, {
+          orgId, branchId: (inv && inv.branchId) || DEFAULT_BRANCH,
+          ...(isCust ? { customerId: contact.id } : { supplierId: contact.id }),
+          invoiceNumber: num, date: dateTs, dueDate: Timestamp.fromDate(due),
+          status: 'posted', totalPiasters: diff, paidPiasters: 0, remainingPiasters: diff,
+          subtotalPiasters: diff, discountPiasters: 0, taxPiasters: 0,
+          isManualDebt: true, isAdjustment: true, adjustedInvoiceId: inv.id,
+          oldRemainingPiasters: oldRemaining, newRemainingPiasters: newAmount,
+          manualReason: reason, paymentMethod: 'credit',
+          createdBy: me.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+        });
+        const snap = await getDoc(doc(db, kind, contact.id));
+        if (snap.exists()) {
+          const cur = Number(snap.data().currentBalancePiasters || 0);
+          batch.update(doc(db, kind, contact.id), { currentBalancePiasters: cur + diff, updatedAt: serverTimestamp() });
+        }
+        await batch.commit();
+        alert(`تم تعديل المبلغ: من ${fmtEGP(oldRemaining)} إلى ${fmtEGP(newAmount)} (زيادة ${fmtEGP(diff)} كقيد تسوية رقم ${num}).`);
+      }
+      area.innerHTML = '';
+      await onDone();
+    } catch (err) {
+      showError($('adj-error'), firestoreErrorMessage(err));
+      $('adj-submit').disabled = false; $('adj-submit').textContent = '✅ حفظ التعديل';
+    }
+  });
+}
+
 // --- تسجيل دفعة: مستند دفعة + تحديث رصيد الجهة (ذرياً) + أثر الصندوق/البنك ---
-async function recordPayment(kind, contactId, inv, amountPiasters, dateTs, method, notes) {
+async function recordPayment(kind, contactId, inv, amountPiasters, dateTs, method, notes, extra = {}) {
   const isCust = kind === 'customers';
   const coll = isCust ? 'salesPayments' : 'purchasePayments';
   const contactRef = doc(db, kind, contactId);
@@ -1783,7 +1863,7 @@ async function recordPayment(kind, contactId, inv, amountPiasters, dateTs, metho
   const payData = {
     orgId, branchId: (inv && inv.branchId) || DEFAULT_BRANCH,
     amountPiasters, paymentMethod: method, date: dateTs, notes: notes || '',
-    createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(), ...extra
   };
   if (isCust) { payData.customerId = contactId; payData.salesInvoiceId = inv ? inv.id : null; payData.receivedBy = me.uid; }
   else { payData.supplierId = contactId; payData.purchaseInvoiceId = inv ? inv.id : null; payData.paidBy = me.uid; }
@@ -2206,7 +2286,7 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
         <div class="inv-logo">الفلكي <span>لقطع غيار السيارات</span></div>
         <div class="inv-brand-en" dir="ltr">Al-Falaky Auto Spare Parts</div>
       </div>
-      <div class="inv-title">${inv.isManualDebt ? 'مديونية يدوية' : (isSales ? 'فاتورة مبيعات' : 'فاتورة مشتريات')}</div>
+      <div class="inv-title">${inv.isAdjustment ? 'قيد تسوية' : inv.isManualDebt ? 'مديونية يدوية' : (isSales ? 'فاتورة مبيعات' : 'فاتورة مشتريات')}</div>
     </div>
     <div class="inv-meta">
       <div><span>رقم الفاتورة:</span> <b dir="ltr">${esc(inv.invoiceNumber || inv.id)}</b></div>
@@ -2220,7 +2300,7 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
       <div><span>الهاتف:</span> <b dir="ltr">${esc(contact ? (contact.phone || '—') : '—')}</b></div>
       <div><span>العنوان:</span> <b>${esc(contact ? (contact.address_ar || '—') : '—')}</b></div>
     </div>
-    ${inv.isManualDebt ? `<div class="inv-notes">مديونية مسجلة يدوياً (بدون بنود منتجات) — البيان: <b>${esc(inv.manualReason || '—')}</b></div>` : `
+    ${inv.isManualDebt ? `<div class="inv-notes">مديونية مسجلة يدوياً (بدون بنود منتجات) — البيان: <b>${esc(inv.manualReason || '—')}</b>${inv.isAdjustment ? ` — تعديل للمبلغ من <b>${fmtEGP(inv.oldRemainingPiasters)}</b> إلى <b>${fmtEGP(inv.newRemainingPiasters)}</b>` : ''}</div>` : `
     <table class="inv-table">
       <tr><th>#</th><th>الصنف</th><th>رقم القطعة</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr>
       ${items.map((it, i) => `<tr>
