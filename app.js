@@ -2589,19 +2589,37 @@ function printStatement(kind, contact, openList, myPayments, invById) {
 // فيحافظ على تشكيل العربية واتجاه RTL من غير خطوط PDF عربية. قراءة فقط —
 // لا يغيّر أي بيانات أو أرصدة. الملف يتنزل باسم رقم الفاتورة.
 // ===========================================================================
+function canvasHasContent(canvas) {
+  if (!canvas || !canvas.width || !canvas.height) return false;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let found = 0;
+  for (let i = 0; i < data.length; i += 16) { // عيّنة: كل 4 بكسلات
+    if (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250) {
+      if (++found >= 500) return true;
+    }
+  }
+  return false;
+}
 async function downloadElementAsPDF(html, filename) {
   if (typeof html2pdf === 'undefined') {
     alert('تعذّر تحميل مكتبة PDF — تأكّد من الاتصال بالإنترنت ثم أعد المحاولة.');
-    return Promise.resolve();
+    return;
   }
-  // الحاوية داخل نطاق الصفحة (left:0) وخلف الواجهة (z-index:-1) — الحاوية خارج
-  // الشاشة (left سالب) كانت تجعل html2canvas يصوّر ورقة فاضية
+  // الحاوية في التدفق الطبيعي (ليست fixed) داخل غلاف مطلق خلف الواجهة —
+  // نسخة fixed كانت تنهار في استنساخ html2canvas (ارتفاع اللوحة 0) فتطلع صفحة بيضاء.
+  // ملاحظة: حزمة html2pdf لا تعرّض html2canvas كمتغير عام، فلا نفحصه —
+  // التحقق يتم من اللوحة نفسها عبر عامل html2pdf.
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:absolute;left:0;top:0;width:794px;z-index:-1;';
   const host = document.createElement('div');
   host.className = 'pdf-doc';
   host.setAttribute('dir', 'rtl');
-  host.style.cssText = 'position:fixed;left:0;top:0;width:794px;z-index:-1;background:#fff;';
+  host.style.cssText = 'width:794px;background:#fff;';
   host.innerHTML = html;
-  document.body.appendChild(host);
+  wrap.appendChild(host);
+  document.body.appendChild(wrap);
   // انتظر frame بعد الإضافة حتى يستقر التخطيط والخطوط قبل التصوير
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   const opt = {
@@ -2613,9 +2631,20 @@ async function downloadElementAsPDF(html, filename) {
     // لا تقطع صف جدول أو مجموع أو تذييل بين صفحتين
     pagebreak: { mode: ['css', 'legacy'], avoid: ['.inv-table tr', '.inv-totals', '.inv-foot', '.pdf-doc h3'] }
   };
-  return html2pdf().set(opt).from(host).save()
-    .catch((err) => { alert('تعذّر إنشاء ملف PDF: ' + (err && err.message ? err.message : 'خطأ غير معروف')); })
-    .finally(() => { host.remove(); });
+  try {
+    // تحقق قبل الحفظ: صوّر أولاً بنفس عامل html2pdf وتأكد أن اللوحة فيها محتوى
+    const worker = html2pdf().set(opt).from(host).toCanvas();
+    const canvas = await worker.get('canvas');
+    if (!canvasHasContent(canvas)) {
+      alert('تعذّر تصوير ورقة الفاتورة — الصفحة الناتجة فارغة. حاول مرة أخرى، ولو استمرت المشكلة أعد تحميل الصفحة.');
+      return;
+    }
+    await worker.toPdf().save();
+  } catch (err) {
+    alert('تعذّر إنشاء ملف PDF: ' + (err && err.message ? err.message : 'خطأ غير معروف'));
+  } finally {
+    wrap.remove();
+  }
 }
 async function downloadInvoicePDF(kind, invoiceId) {
   let data;
