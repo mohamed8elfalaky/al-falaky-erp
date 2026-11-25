@@ -2445,7 +2445,7 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
       <div><span>العنوان:</span> <b>${esc(contact ? (contact.address_ar || '—') : '—')}</b></div>
     </div>
     ${inv.isManualDebt ? `<div class="inv-notes">مديونية مسجلة يدوياً (بدون بنود منتجات) — البيان: <b>${esc(inv.manualReason || '—')}</b>${inv.manualDetails ? ` — التفاصيل: <b>${esc(inv.manualDetails)}</b>` : ''}${inv.isAdjustment ? ` — تعديل للمبلغ من <b>${fmtEGP(inv.oldRemainingPiasters)}</b> إلى <b>${fmtEGP(inv.newRemainingPiasters)}</b>` : ''}</div>` : `
-    <table class="inv-table">
+    <table class="inv-table items-table">
       <tr><th>#</th><th>الصنف</th><th>رقم القطعة</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr>
       ${items.map((it, i) => `<tr>
         <td>${i + 1}</td><td>${esc(it.productName_ar || it.productName || '—')}</td>
@@ -2555,7 +2555,7 @@ function statementHTML(kind, contact, openList, myPayments, invById) {
       <div><span>المديونية المفتوحة:</span> <b>${fmtEGP(totalDebt)}</b></div>
     </div>
     <h3 style="color:#111;margin:14px 0 8px">الفواتير المفتوحة</h3>
-    ${openList.length ? `<table class="inv-table"><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>التفاصيل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr>
+    ${openList.length ? `<table class="inv-table stmt-table"><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>التفاصيل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr>
       ${openList.map(({ inv, remaining, paid, details }) => `<tr>
         <td dir="ltr">${esc(inv.invoiceNumber || inv.id)}</td>
         <td>${tsToDate(inv.date || inv.createdAt).toLocaleDateString('ar-EG')}</td>
@@ -2602,6 +2602,17 @@ function canvasHasContent(canvas) {
   }
   return false;
 }
+// html2canvas يسقط المسافات بين الكلمات العربية عند إعادة ترتيب الكلمات RTL —
+// نستبدل المسافة العادية بمسافة غير فاصلة (\u00A0) في نصوص ورقة الـ PDF
+// (الحل المتعارف عليه لهذه المشكلة)، فتُرسَم الكلمات متصلة بمسافة ظاهرة.
+function fixArabicSpaces(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const n of nodes) {
+    if (n.nodeValue.includes(' ')) n.nodeValue = n.nodeValue.replace(/ /g, '\u00A0');
+  }
+}
 async function downloadElementAsPDF(html, filename) {
   if (typeof html2pdf === 'undefined') {
     alert('تعذّر تحميل مكتبة PDF — تأكّد من الاتصال بالإنترنت ثم أعد المحاولة.');
@@ -2618,6 +2629,7 @@ async function downloadElementAsPDF(html, filename) {
   host.setAttribute('dir', 'rtl');
   host.style.cssText = 'width:794px;background:#fff;';
   host.innerHTML = html;
+  fixArabicSpaces(host);
   wrap.appendChild(host);
   document.body.appendChild(wrap);
   // انتظر frame بعد الإضافة حتى يستقر التخطيط والخطوط قبل التصوير
