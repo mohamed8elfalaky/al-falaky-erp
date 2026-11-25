@@ -6,7 +6,7 @@
 <title>الفلكي لقطع غيار السيارات — Al-Falaky Smart ERP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20261125u">
+<link rel="stylesheet" href="styles.css?v=20261125v11e">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -126,6 +126,7 @@
       <label>باركود</label><input id="pf-barcode" dir="ltr">
       <label>رمز QR</label><input id="pf-qr" dir="ltr">
       <label>التصنيف</label><select id="pf-category"></select>
+      <div id="pf-newcat-wrap" style="display:flex;gap:6px;margin-top:4px"><input id="pf-newcat" type="text" placeholder="أو اكتب تصنيفاً جديداً هنا (للمالك)"><button class="btn small secondary" id="pf-newcat-add" type="button" style="width:auto;white-space:nowrap">➕ إضافة التصنيف</button></div>
       <label>العلامة التجارية</label><select id="pf-brand"></select>
       <label>المورد</label><select id="pf-supplier"></select>
       <label>الوحدة</label><select id="pf-unit"><option value="قطعة">قطعة</option><option value="علبة">علبة</option><option value="طقم">طقم</option><option value="لتر">لتر</option><option value="متر">متر</option><option value="كيلو">كيلو</option></select>
@@ -186,13 +187,14 @@
 <!-- ================= نافذة موظف جديد (مالك فقط) ================= -->
 <div id="employee-modal" class="modal hidden">
   <div class="modal-box">
-    <h3>موظف جديد</h3>
+    <h3 id="employee-modal-title">موظف جديد</h3>
     <p class="note" style="text-align:right">يُنشأ حساب الموظف في Firebase Auth، وتُحفظ واجهاته وصلاحياته في مستند users الخاص به.</p>
     <form id="employee-form">
       <label>الاسم *</label><input id="ef-name" required>
-      <label>البريد الإلكتروني *</label><input id="ef-email" type="email" required dir="ltr">
-      <label>كلمة مرور مؤقتة *</label><input id="ef-pass" type="password" required minlength="6">
+      <div id="ef-email-row"><label>البريد الإلكتروني *</label><input id="ef-email" type="email" required dir="ltr"></div>
+      <div id="ef-pass-row"><label>كلمة مرور مؤقتة *</label><input id="ef-pass" type="password" required minlength="6"></div>
       <label>الدور</label>
+      <p class="note hidden" id="ef-role-note" style="text-align:right">تغيير الدور هنا يغيّر ما يستطيع فعله فوراً — الدور الفعلي يأتي من مستند المستخدم (وليس من تصريح الـ token)، والقواعد تطبّقه مباشرة عند الدخول التالي. لا حاجة لتغيير التصريح.</p>
       <select id="ef-role">
         <option value="sales">موظف مبيعات</option>
         <option value="inventory">أمين مخزن</option>
@@ -204,16 +206,34 @@
       <div id="ef-interfaces" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px"></div>
       <label>صلاحيات (اختياري — مثال: sales.create, products.view)</label>
       <input id="ef-perms" dir="ltr" placeholder="sales.create, products.view">
-      <button class="btn" type="submit">إنشاء الموظف</button>
+      <button class="btn" type="submit" id="employee-submit-btn">إنشاء الموظف</button>
       <button class="btn secondary" type="button" id="employee-cancel-btn">إلغاء</button>
       <div class="error" id="employee-error"></div>
     </form>
   </div>
 </div>
 
+<!-- revision 11: نافذة تأكيد الحذف (المالك فقط) — تعرض الأثر كاملاً،
+     وتطلب سبباً وكتابة اسم السجل للتأكيد قبل الحذف النهائي -->
+<div id="delete-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="delete-modal-title">🗑️ تأكيد الحذف</h3>
+    <div id="delete-impact" style="line-height:1.9"></div>
+    <div id="delete-blocker" class="error hidden" style="margin-top:10px"></div>
+    <label>سبب الحذف *</label><input id="delete-reason" type="text" placeholder="مثال: منتج مكرر — أُدخل مرتين">
+    <label id="delete-confirm-label">اكتب اسم السجل للتأكيد *</label>
+    <input id="delete-confirm" type="text" dir="rtl" placeholder="">
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+      <button class="btn danger" id="delete-confirm-btn" type="button">🗑️ حذف نهائياً</button>
+      <button class="btn secondary" id="delete-cancel-btn" type="button">إلغاء</button>
+    </div>
+    <div class="error hidden" id="delete-error"></div>
+  </div>
+</div>
+
 <!-- منطقة الطباعة: تُملأ بمحتوى الفاتورة/كشف الحساب عند الطباعة فقط -->
 <div id="print-area"></div>
 <div id="toast" class="toast hidden"></div>
-<script type="module" src="app.js?v=20261125u"></script>
+<script type="module" src="app.js?v=20261125v11e"></script>
 </body>
 </html>
