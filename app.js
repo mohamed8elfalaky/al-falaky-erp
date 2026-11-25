@@ -1783,6 +1783,7 @@ async function renderDebtDetail(kind, contactId) {
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(myPayments.reduce((a, p) => a + Number(p.amountPiasters || 0), 0))}<span class="unit">ج.م</span></div><div class="label">إجمالي الدفعات المسجلة</div></div><div class="ico">💰</div></div>
     </div>
     <div class="toolbar"><button class="btn small" id="print-statement-btn">🖨️ طباعة كشف الحساب</button>
+    <button class="btn small" id="pdf-statement-btn">⬇️ تحميل PDF</button>
     ${found ? '<button class="btn small" id="debt-add-btn">➕ تسجيل مديونية</button>' : ''}</div>
     ${opening > 0 ? `<p class="note">من المديونية أعلاه رصيد افتتاحي: ${fmtEGP(opening)} — والباقي من الفواتير المفتوحة أدناه.</p>` : ''}
     <div class="card"><h3>الفواتير المفتوحة</h3>
@@ -1819,6 +1820,12 @@ async function renderDebtDetail(kind, contactId) {
   const dab = $('debt-add-btn');
   if (dab) dab.addEventListener('click', () => openManualDebtForm(kind, c, () => renderDebtDetail(kind, contactId)));
   $('print-statement-btn').addEventListener('click', () => printStatement(kind, c, list, myPayments, invById));
+  $('pdf-statement-btn').addEventListener('click', (e) => {
+    const b = e.currentTarget;
+    if (b.disabled) return;
+    b.disabled = true; b.textContent = '⏳ جارٍ إنشاء PDF...';
+    downloadStatementPDF(kind, c, list, myPayments, invById).finally(() => { b.disabled = false; b.textContent = '⬇️ تحميل PDF'; });
+  });
   document.querySelectorAll('[data-pay-inv]').forEach((b) => b.addEventListener('click', () => {
     const inv = list.find((x) => x.inv.id === b.dataset.payInv);
     if (inv) openPayForm(kind, c, inv.inv, Number(b.dataset.payMax), () => renderDebtDetail(kind, contactId));
@@ -2477,6 +2484,7 @@ async function renderInvoiceDetail(kind, invoiceId) {
     <p><button class="btn small secondary" id="inv-detail-back">← عودة</button></p>
     <div class="toolbar">
       <button class="btn" id="inv-print-btn" style="width:auto">🖨️ طباعة الفاتورة (A4)</button>
+      <button class="btn" id="inv-pdf-btn" style="width:auto">⬇️ تحميل PDF</button>
       ${remaining > 0 && contactId ? `<button class="btn" id="inv-pay-btn" style="width:auto">💰 تسديد جزء (المتبقي ${fmtEGP(remaining)})</button>` : ''}
     </div>
     ${invoiceSheetHTML(kind, inv, items, contact, paid, remaining)}
@@ -2489,6 +2497,12 @@ async function renderInvoiceDetail(kind, invoiceId) {
     <p class="note">حالة السداد: <span class="badge ${payStatusBadgeCls(st)}">${payStatusLabel(st)}</span> — المدفوع ${fmtEGP(paid)} من إجمالي ${fmtEGP(inv.totalPiasters)}، والمتبقي ${fmtEGP(remaining)}.</p></div>`;
   $('inv-detail-back').addEventListener('click', () => go(isSales ? 'sales' : 'purchases'));
   $('inv-print-btn').addEventListener('click', () => printInvoice(kind, invoiceId));
+  $('inv-pdf-btn').addEventListener('click', (e) => {
+    const b = e.currentTarget;
+    if (b.disabled) return;
+    b.disabled = true; b.textContent = '⏳ جارٍ إنشاء PDF...';
+    downloadInvoicePDF(kind, invoiceId).finally(() => { b.disabled = false; b.textContent = '⬇️ تحميل PDF'; });
+  });
   const payBtn = $('inv-pay-btn');
   if (payBtn) payBtn.addEventListener('click', () => {
     if (!canRecordPayment(isSales ? 'customers' : 'suppliers')) {
@@ -2521,12 +2535,11 @@ function printInvoice(kind, invoiceId) {
   }).catch((err) => { alert('تعذّرت الطباعة: ' + firestoreErrorMessage(err)); });
 }
 
-function printStatement(kind, contact, openList, myPayments, invById) {
+function statementHTML(kind, contact, openList, myPayments, invById) {
   const isCust = kind === 'customers';
   const totalDebt = openList.reduce((a, x) => a + x.remaining, 0);
   const totalPaid = myPayments.reduce((a, p) => a + Number(p.amountPiasters || 0), 0);
-  const area = $('print-area');
-  area.innerHTML = `
+  return `
   <div class="inv-sheet" dir="rtl">
     <div class="inv-head">
       <div class="inv-brand">
@@ -2563,5 +2576,65 @@ function printStatement(kind, contact, openList, myPayments, invById) {
     : '<p>لا توجد دفعات مسجلة.</p>'}
     <div class="inv-foot"><div>كشف حساب صادر من نظام الفلكي لإدارة قطع غيار السيارات</div></div>
   </div>`;
+}
+function printStatement(kind, contact, openList, myPayments, invById) {
+  const area = $('print-area');
+  area.innerHTML = statementHTML(kind, contact, openList, myPayments, invById);
   printArea();
+}
+
+// ===========================================================================
+// تنزيل PDF حقيقي (html2pdf.js من CDN — لا مفاتيح ولا بيانات خاصة)
+// الفكرة: تصوير ورقة الفاتورة/كشف الحساب كما تظهر على الشاشة (html2canvas)،
+// فيحافظ على تشكيل العربية واتجاه RTL من غير خطوط PDF عربية. قراءة فقط —
+// لا يغيّر أي بيانات أو أرصدة. الملف يتنزل باسم رقم الفاتورة.
+// ===========================================================================
+function downloadElementAsPDF(html, filename) {
+  if (typeof html2pdf === 'undefined') {
+    alert('تعذّر تحميل مكتبة PDF — تأكّد من الاتصال بالإنترنت ثم أعد المحاولة.');
+    return Promise.resolve();
+  }
+  // حاوية خارج الشاشة بعرض A4 (794px) حتى تُصوَّر الورقة بمقاسها الصحيح
+  const host = document.createElement('div');
+  host.className = 'pdf-doc';
+  host.setAttribute('dir', 'rtl');
+  host.style.cssText = 'position:fixed;left:-10000px;top:0;width:794px;background:#fff;';
+  host.innerHTML = html;
+  document.body.appendChild(host);
+  const opt = {
+    margin: 0,
+    filename,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+    // لا تقطع صف جدول أو مجموع أو تذييل بين صفحتين
+    pagebreak: { mode: ['css', 'legacy'], avoid: ['.inv-table tr', '.inv-totals', '.inv-foot', '.pdf-doc h3'] }
+  };
+  return html2pdf().set(opt).from(host).save()
+    .catch((err) => { alert('تعذّر إنشاء ملف PDF: ' + (err && err.message ? err.message : 'خطأ غير معروف')); })
+    .finally(() => { host.remove(); });
+}
+async function downloadInvoicePDF(kind, invoiceId) {
+  let data;
+  try { data = await loadInvoiceDetail(kind, invoiceId); }
+  catch (err) { alert('تعذّر تحميل الفاتورة: ' + firestoreErrorMessage(err)); return; }
+  if (!data) { alert('تعذّر العثور على هذه الفاتورة.'); return; }
+  const { inv, items, contact, payments, remaining, paid } = data;
+  const st = payStatusOf(Number(inv.totalPiasters || 0), paid);
+  // نفس ورقة الفاتورة المعروضة + سجل الدفعات وحالة السداد (كما على الشاشة)
+  const html = `${invoiceSheetHTML(kind, inv, items, contact, paid, remaining)}
+  <div class="inv-sheet" dir="rtl" style="margin-top:14px">
+    <h3 style="color:#111;margin:0 0 8px">سجل الدفعات على هذه الفاتورة</h3>
+    ${payments.length ? `<table class="inv-table"><tr><th>التاريخ</th><th>طريقة الدفع</th><th>المبلغ</th><th>ملاحظات</th></tr>
+      ${payments.map((p) => `<tr><td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td>
+      <td>${payMethodLabel(p.paymentMethod)}</td><td class="num">${fmtEGP(p.amountPiasters)}</td><td>${esc(p.notes || '')}</td></tr>`).join('')}</table>`
+    : '<p>لا توجد دفعات لاحقة مسجلة على هذه الفاتورة.</p>'}
+    <p style="color:#111;margin:12px 0 0">حالة السداد: <b>${payStatusLabel(st)}</b> — المدفوع ${fmtEGP(paid)} من إجمالي ${fmtEGP(inv.totalPiasters)}، والمتبقي ${fmtEGP(remaining)}.</p>
+  </div>`;
+  return downloadElementAsPDF(html, `${inv.invoiceNumber || inv.id}.pdf`);
+}
+async function downloadStatementPDF(kind, contact, openList, myPayments, invById) {
+  const name = String(contact.name_ar || 'كشف-حساب').replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '-');
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  return downloadElementAsPDF(statementHTML(kind, contact, openList, myPayments, invById), `كشف-حساب-${name}-${date}.pdf`);
 }
