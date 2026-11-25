@@ -2589,23 +2589,26 @@ function printStatement(kind, contact, openList, myPayments, invById) {
 // فيحافظ على تشكيل العربية واتجاه RTL من غير خطوط PDF عربية. قراءة فقط —
 // لا يغيّر أي بيانات أو أرصدة. الملف يتنزل باسم رقم الفاتورة.
 // ===========================================================================
-function downloadElementAsPDF(html, filename) {
+async function downloadElementAsPDF(html, filename) {
   if (typeof html2pdf === 'undefined') {
     alert('تعذّر تحميل مكتبة PDF — تأكّد من الاتصال بالإنترنت ثم أعد المحاولة.');
     return Promise.resolve();
   }
-  // حاوية خارج الشاشة بعرض A4 (794px) حتى تُصوَّر الورقة بمقاسها الصحيح
+  // الحاوية داخل نطاق الصفحة (left:0) وخلف الواجهة (z-index:-1) — الحاوية خارج
+  // الشاشة (left سالب) كانت تجعل html2canvas يصوّر ورقة فاضية
   const host = document.createElement('div');
   host.className = 'pdf-doc';
   host.setAttribute('dir', 'rtl');
-  host.style.cssText = 'position:fixed;left:-10000px;top:0;width:794px;background:#fff;';
+  host.style.cssText = 'position:fixed;left:0;top:0;width:794px;z-index:-1;background:#fff;';
   host.innerHTML = html;
   document.body.appendChild(host);
+  // انتظر frame بعد الإضافة حتى يستقر التخطيط والخطوط قبل التصوير
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   const opt = {
     margin: 0,
     filename,
     image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollX: 0, scrollY: 0, windowWidth: 794 },
     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
     // لا تقطع صف جدول أو مجموع أو تذييل بين صفحتين
     pagebreak: { mode: ['css', 'legacy'], avoid: ['.inv-table tr', '.inv-totals', '.inv-foot', '.pdf-doc h3'] }
