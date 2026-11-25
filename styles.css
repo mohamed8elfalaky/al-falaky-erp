@@ -492,3 +492,7 @@ body.mobile-view .donut-wrap { flex-direction: column; }
 /* تفاصيل المديونية تحت رقم الفاتورة (هو خد إيه) */
 .inv-details{font-size:12px;opacity:.78;margin-top:3px;line-height:1.6}
 textarea{width:100%;padding:10px;border:1px solid var(--border,#d8d8d8);border-radius:8px;font:inherit;resize:vertical}
+
+/* تنبيه Toast بعد الحفظ */
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#1a7f37;color:#fff;padding:12px 22px;border-radius:10px;z-index:9999;box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:15px;max-width:92vw;text-align:center;line-height:1.6}
+.toast.hidden{display:none}

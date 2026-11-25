@@ -126,6 +126,17 @@ function categoryIcon(catId) {
   return '🔧';
 }
 const toPiasters = (egp) => Math.round(Number(egp || 0) * 100);
+// --- تنبيه Toast غير مزعج (بديل للـ alert بعد الحفظ) ---
+let toastTimer = null;
+function showToast(msg) {
+  const t = $('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add('hidden'), 5000);
+}
+
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 // شارة «تجريبي» لأي مستند مُعلَّم isDemo:true في Firestore
 const demoBadge = (d) => (d && d.isDemo) ? ' <span class="badge demo">🧪 تجريبي</span>' : '';
@@ -1832,7 +1843,7 @@ function openAdjustForm(kind, contact, inv, oldRemaining, onDone) {
         const diff = oldRemaining - newAmount;
         await recordPayment(kind, contact.id, inv, diff, dateTs, 'adjustment', reason,
           { isAdjustment: true, oldRemainingPiasters: oldRemaining, newRemainingPiasters: newAmount, reason });
-        alert(`تم تعديل المبلغ: من ${fmtEGP(oldRemaining)} إلى ${fmtEGP(newAmount)} (نقصان ${fmtEGP(diff)} كدفعة تسوية).`);
+        showToast(`✅ تم تعديل المبلغ: من ${fmtEGP(oldRemaining)} إلى ${fmtEGP(newAmount)} (نقصان ${fmtEGP(diff)} كدفعة تسوية).`);
       } else {
         const diff = newAmount - oldRemaining;
         const num = 'DEBT-ADJ-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(Date.now()).slice(-6);
@@ -1856,7 +1867,7 @@ function openAdjustForm(kind, contact, inv, oldRemaining, onDone) {
           batch.update(doc(db, kind, contact.id), { currentBalancePiasters: cur + diff, updatedAt: serverTimestamp() });
         }
         await batch.commit();
-        alert(`تم تعديل المبلغ: من ${fmtEGP(oldRemaining)} إلى ${fmtEGP(newAmount)} (زيادة ${fmtEGP(diff)} كقيد تسوية رقم ${num}).`);
+        showToast(`✅ تم تعديل المبلغ: من ${fmtEGP(oldRemaining)} إلى ${fmtEGP(newAmount)} (زيادة ${fmtEGP(diff)} كقيد تسوية رقم ${num}).`);
       }
       area.innerHTML = '';
       await onDone();
@@ -1961,7 +1972,7 @@ $('manual-debt-form').addEventListener('submit', async (e) => {
     }
     await batch.commit();
     $('manual-debt-modal').classList.add('hidden');
-    alert(`تم تسجيل مديونية ${fmtEGP(amount)} على ${mdContact.name_ar} — رقمها ${num}.`);
+    showToast(`✅ تم تسجيل مديونية ${fmtEGP(amount)} على ${mdContact.name_ar} — رقمها ${num}.`);
     const done = mdOnDone; mdOnDone = null; if (done) await done();
   } catch (err) {
     showError($('md-error'), firestoreErrorMessage(err));
