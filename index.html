@@ -6,7 +6,7 @@
 <title>الفلكي لقطع غيار السيارات — Al-Falaky Smart ERP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20261125v11f2">
+<link rel="stylesheet" href="styles.css?v=20261125v11g">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -220,12 +220,10 @@
     <h3 id="delete-modal-title">🗑️ تأكيد الحذف</h3>
     <div id="delete-impact" style="line-height:1.9"></div>
     <div id="delete-blocker" class="error hidden" style="margin-top:10px"></div>
-    <label>سبب الحذف *</label><input id="delete-reason" type="text" placeholder="مثال: منتج مكرر — أُدخل مرتين">
-    <label id="delete-confirm-label">اكتب اسم السجل للتأكيد *</label>
-    <input id="delete-confirm" type="text" dir="rtl" placeholder="">
+    <p id="delete-question" style="font-weight:700;margin:14px 0 0"></p>
     <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-      <button class="btn danger" id="delete-confirm-btn" type="button">🗑️ حذف نهائياً</button>
-      <button class="btn secondary" id="delete-cancel-btn" type="button">إلغاء</button>
+      <button class="btn danger" id="delete-confirm-btn" type="button">نعم، احذف</button>
+      <button class="btn secondary" id="delete-cancel-btn" type="button">لا، إلغاء</button>
     </div>
     <div class="error hidden" id="delete-error"></div>
   </div>
@@ -234,6 +232,6 @@
 <!-- منطقة الطباعة: تُملأ بمحتوى الفاتورة/كشف الحساب عند الطباعة فقط -->
 <div id="print-area"></div>
 <div id="toast" class="toast hidden"></div>
-<script type="module" src="app.js?v=20261125v11f2"></script>
+<script type="module" src="app.js?v=20261125v11g"></script>
 </body>
 </html>
