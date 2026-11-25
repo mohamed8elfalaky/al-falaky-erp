@@ -426,6 +426,13 @@ function productStock(p) { return balancesCache[p.id] ?? null; } // null = لا 
 // (بدل قراءة متسلسلة لبنود كل فاتورة على حدة، اللي كانت تعلّق لوحة التحكم)
 let invoiceItemsCache = {}; // invoiceId -> [items]
 async function loadInvoiceItems(invoices, coll = 'salesInvoices') {
+  if (coll === 'purchaseInvoices') {
+    // أصناف فواتير الشراء مضمّنة في مستند الفاتورة نفسه (inv.items) — لا توجد
+    // مجموعة فرعية items تحت purchaseInvoices، وقواعد Firestore ترفض قراءتها
+    // (هذا الرفض كان يعطّل فتح تفاصيل مديونيات الموردين بالكامل)
+    invoices.forEach((inv) => { invoiceItemsCache[inv.id] = Array.isArray(inv.items) ? inv.items : []; });
+    return invoiceItemsCache;
+  }
   const missing = invoices.filter((inv) => !(inv.id in invoiceItemsCache));
   if (missing.length) {
     const snaps = await Promise.all(missing.map((inv) => getDocs(collection(db, coll, inv.id, 'items'))));
@@ -999,6 +1006,9 @@ function openProductForm(p = null, scannedCode = '') {
 $('product-cancel-btn').addEventListener('click', () => $('product-modal').classList.add('hidden'));
 $('product-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const submitBtn = document.querySelector('#product-form button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'جارٍ الحفظ...'; }
+  const done = () => { if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'حفظ المنتج'; } };
   // سعر الشراء لا يُكتب إلا ممن لديه صلاحية رؤيته — وإلا يبقى كما هو عند التعديل
   const buyPrice = canSeePrices() ? toPiasters($('pf-buy').value)
     : (editingProduct ? Number(editingProduct.purchasePricePiasters || 0) : 0);
@@ -1018,6 +1028,12 @@ $('product-form').addEventListener('submit', async (e) => {
     warehouseLocation: $('pf-loc').value.trim(), shelfNumber: $('pf-shelf').value.trim(),
     description_ar: $('pf-notes').value.trim(), isActive: editingProduct ? (editingProduct.isActive !== false) : true, updatedAt: serverTimestamp()
   };
+  // رقم القطعة unique: مرفوض لو موجود لمنتج آخر (يسمح برقم المنتج نفسه عند التعديل)
+  if (data.partNumber) {
+    await loadProducts();
+    const clash = productsCache.find((p) => (p.partNumber || '') === data.partNumber && p.id !== (editingProduct ? editingProduct.id : null));
+    if (clash) { showError($('product-error'), 'رقم القطعة ده موجود بالفعل لمنتج آخر.'); done(); return; }
+  }
   try {
     if (editingProduct) await updateDoc(doc(db, 'products', editingProduct.id), data);
     else await addDoc(collection(db, 'products'), { ...data, createdAt: serverTimestamp() });
@@ -1026,6 +1042,7 @@ $('product-form').addEventListener('submit', async (e) => {
     if (currentPage === 'products') await renderProducts();
     else if (currentPage === 'inventory') await renderInventory();
   } catch (err) { showError($('product-error'), firestoreErrorMessage(err)); }
+  done();
 });
 
 // ============================================================================
@@ -1115,6 +1132,8 @@ async function renderPOS() {
     const subtotal = posCart.reduce((a, l) => a + l.qty * Number(l.product.sellingPricePiasters || 0), 0);
     const paid = Math.min(subtotal, Math.max(0, toPiasters($('pos-paid').value)));
     const customerId = $('pos-customer').value || null;
+    // البيع الآجل يحتاج عميلاً بحساب — العميل النقدي (بدون حساب) لا تجوز عليه مديونية
+    if (!customerId && subtotal - paid > 0) { showError($('pos-error'), 'البيع الآجل يحتاج عميلاً مسجلاً — اختر عميلاً أو ادفع كامل المبلغ.'); return; }
     const invoiceNumber = 'SI-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(Date.now()).slice(-6);
     try {
       const batch = writeBatch(db);
@@ -1316,6 +1335,8 @@ function openContactForm() {
 $('contact-cancel-btn').addEventListener('click', () => $('contact-modal').classList.add('hidden'));
 $('contact-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const submitBtn = document.querySelector('#contact-form button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'جارٍ الحفظ...'; }
   try {
     await addDoc(collection(db, contactMode), {
       orgId, branchId: DEFAULT_BRANCH,
@@ -1328,6 +1349,7 @@ $('contact-form').addEventListener('submit', async (e) => {
     $('contact-modal').classList.add('hidden');
     await renderContacts(contactMode);
   } catch (err) { showError($('contact-error'), firestoreErrorMessage(err)); }
+  finally { if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'حفظ'; } }
 });
 
 // ============================================================================
@@ -1432,6 +1454,8 @@ $('employee-cancel-btn').addEventListener('click', () => $('employee-modal').cla
 $('employee-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   hideError($('employee-error'));
+  const submitBtn = document.querySelector('#employee-form button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'جارٍ الحفظ...'; }
   const interfaces = [...document.querySelectorAll('#ef-interfaces input:checked')].map((c) => c.value);
   const permissions = $('ef-perms').value.split(',').map((s) => s.trim()).filter(Boolean);
   let secondary = null;
@@ -1456,6 +1480,7 @@ $('employee-form').addEventListener('submit', async (e) => {
       ? 'هذا البريد مسجّل بالفعل في Firebase Auth.'
       : firestoreErrorMessage(err));
   } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'إنشاء الموظف'; }
     if (secondary) await deleteApp(secondary).catch(() => {});
   }
 });
@@ -2340,12 +2365,17 @@ async function saveInvoiceForm() {
     }
     await batch.commit();
     // أثر المدفوع الآن على الصندوق/البنك (أفضل جهد — لا يفشل الحفظ)
+    let cashMsg = '';
     if (t.paid > 0) {
       const cashNote = await applyCashMovement(payMethod, t.paid, isSales ? 1 : -1);
       if (cashNote) alert(cashNote);
+      else {
+        const dest = (payMethod === 'bank_transfer' || payMethod === 'visa' || payMethod === 'instapay') ? 'الحساب البنكي الرئيسي' : 'الصندوق الرئيسي';
+        cashMsg = isSales ? `أُضيف ${fmtEGP(t.paid)} إلى «${dest}».` : `خُصم ${fmtEGP(t.paid)} من «${dest}».`;
+      }
     }
     await loadProducts();
-    alert(`تم حفظ الفاتورة ${invoiceNumber} في Firestore.`);
+    showToast(`✅ تم حفظ الفاتورة ${invoiceNumber}.${cashMsg ? ' ' + cashMsg : ''}`);
     invForm = null;
     await renderInvoiceDetail(isSales ? 'sales' : 'purchase', invRef.id);
   } catch (err) {
@@ -2469,14 +2499,26 @@ async function renderInvoiceDetail(kind, invoiceId) {
   });
 }
 
+function printArea() {
+  if (typeof window.print === 'function') window.print();
+  else alert('الطباعة غير متاحة في هذا المتصفح — افتح الرابط في Chrome ثم اطبع.');
+}
 function printInvoice(kind, invoiceId) {
+  // ورقة الفاتورة معروضة أصلاً على الصفحة — نطبعها مباشرة من غير إعادة تحميل
+  // (التحميل غير المتزامن بلا catch كان يفشل بصمت، فلا نافذة ولا رسالة)
+  const sheet = document.querySelector('#page .inv-sheet');
+  const area = $('print-area');
+  if (sheet) {
+    area.innerHTML = sheet.outerHTML;
+    printArea();
+    return;
+  }
   loadInvoiceDetail(kind, invoiceId).then((data) => {
     if (!data) { alert('تعذّر العثور على هذه الفاتورة.'); return; }
     const { inv, items, contact, paid, remaining } = data;
-    const area = $('print-area');
     area.innerHTML = invoiceSheetHTML(kind, inv, items, contact, paid, remaining);
-    window.print();
-  });
+    printArea();
+  }).catch((err) => { alert('تعذّرت الطباعة: ' + firestoreErrorMessage(err)); });
 }
 
 function printStatement(kind, contact, openList, myPayments, invById) {
@@ -2521,5 +2563,5 @@ function printStatement(kind, contact, openList, myPayments, invById) {
     : '<p>لا توجد دفعات مسجلة.</p>'}
     <div class="inv-foot"><div>كشف حساب صادر من نظام الفلكي لإدارة قطع غيار السيارات</div></div>
   </div>`;
-  window.print();
+  printArea();
 }
