@@ -442,21 +442,25 @@ async function renderDashboard() {
   await loadProducts();
   const posted = sales.filter((s) => s.status === 'posted');
   const postedPurchases = purchases.filter((p) => p.status === 'posted');
-  const totalSales = posted.reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
-  const totalPurchases = postedPurchases.reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
+  // المديونيات اليدوية ديون وليست مبيعات/مشتريات: تُستبعد من أرقام المبيعات
+  // والمشتريات والربح والرسم البياني، وتبقى في بطاقات المديونية فقط
+  const tradeSales = posted.filter((s) => !s.isManualDebt);
+  const tradePurchases = postedPurchases.filter((p) => !p.isManualDebt);
+  const totalSales = tradeSales.reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
+  const totalPurchases = tradePurchases.reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
   const monthKey = (d) => `${d.getFullYear()}-${d.getMonth()}`;
   const monthSum = (list, y, m) => list.filter((s) => { const t = tsToDate(s.date || s.createdAt); return t.getFullYear() === y && t.getMonth() === m; })
     .reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
   const now = new Date();
   const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const salesCur = monthSum(posted, now.getFullYear(), now.getMonth());
-  const salesPrev = monthSum(posted, prevMonth.getFullYear(), prevMonth.getMonth());
-  const purchCur = monthSum(postedPurchases, now.getFullYear(), now.getMonth());
-  const purchPrev = monthSum(postedPurchases, prevMonth.getFullYear(), prevMonth.getMonth());
+  const salesCur = monthSum(tradeSales, now.getFullYear(), now.getMonth());
+  const salesPrev = monthSum(tradeSales, prevMonth.getFullYear(), prevMonth.getMonth());
+  const purchCur = monthSum(tradePurchases, now.getFullYear(), now.getMonth());
+  const purchPrev = monthSum(tradePurchases, prevMonth.getFullYear(), prevMonth.getMonth());
   // الربح = الإيراد − تكلفة البضاعة المباعة (من بنود آخر 60 فاتورة)، وحساب التكلفة حسب الشهر
   const cogsByMonth = {};
-  await loadInvoiceItems(posted.slice(0, 60));
-  for (const inv of posted.slice(0, 60)) {
+  await loadInvoiceItems(tradeSales.slice(0, 60));
+  for (const inv of tradeSales.slice(0, 60)) {
     const k = monthKey(tsToDate(inv.date || inv.createdAt));
     (invoiceItemsCache[inv.id] || []).forEach((d) => { cogsByMonth[k] = (cogsByMonth[k] || 0) + Number(d.costPricePiasters || 0) * Number(d.quantity || 0); });
   }
@@ -492,7 +496,7 @@ async function renderDashboard() {
 
   // أكثر المنتجات مبيعاً (من بنود آخر 60 فاتورة)
   const soldQty = {};
-  for (const inv of posted.slice(0, 60)) {
+  for (const inv of tradeSales.slice(0, 60)) {
     (invoiceItemsCache[inv.id] || []).forEach((d) => { soldQty[d.productId] = (soldQty[d.productId] || 0) + Number(d.quantity || 0); });
   }
   const best = Object.entries(soldQty).sort((a, b) => b[1] - a[1]).slice(0, 5)
@@ -525,12 +529,12 @@ async function renderDashboard() {
   for (let i = dashRange - 1; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     months.push(d.toLocaleDateString('ar-EG', { month: 'long' }));
-    salesByMonth.push(monthSum(posted, d.getFullYear(), d.getMonth()) / 100);
-    purchByMonth.push(monthSum(postedPurchases, d.getFullYear(), d.getMonth()) / 100);
+    salesByMonth.push(monthSum(tradeSales, d.getFullYear(), d.getMonth()) / 100);
+    purchByMonth.push(monthSum(tradePurchases, d.getFullYear(), d.getMonth()) / 100);
   }
   // مبيعات حسب الفئة (من بنود الفواتير)
   const catTotals = {};
-  for (const inv of posted.slice(0, 60)) {
+  for (const inv of tradeSales.slice(0, 60)) {
     (invoiceItemsCache[inv.id] || []).forEach((d) => { const cat = categoryName((prodById[d.productId] || {}).categoryId);
       catTotals[cat] = (catTotals[cat] || 0) + Number(d.lineTotalPiasters || 0); });
   }
@@ -539,7 +543,7 @@ async function renderDashboard() {
   const catColors = ['#2f81f7', '#f0883e', '#3fb950', '#a371f7', '#8b98a9', '#39c5cf'];
   // أداء الفروع (حسب فلتر المدة)
   const branchTotals = {};
-  posted.forEach((s) => {
+  tradeSales.forEach((s) => {
     const t = tsToDate(s.date || s.createdAt);
     if (branchRange === 'month' && (t.getFullYear() !== now.getFullYear() || t.getMonth() !== now.getMonth())) return;
     if (branchRange === 'quarter' && t < new Date(now.getFullYear(), now.getMonth() - 2, 1)) return;
@@ -1139,7 +1143,7 @@ async function renderPOS() {
   if (recentEl) {
     const payMap = {};
     recentPays.forEach((p) => { if (p.salesInvoiceId) payMap[p.salesInvoiceId] = (payMap[p.salesInvoiceId] || 0) + Number(p.amountPiasters || 0); });
-    const rows = recentSales.filter((s) => s.status === 'posted').sort((a, b) => tsToDate(b.createdAt) - tsToDate(a.createdAt)).slice(0, 10);
+    const rows = recentSales.filter((s) => s.status === 'posted' && !s.isManualDebt).sort((a, b) => tsToDate(b.createdAt) - tsToDate(a.createdAt)).slice(0, 10);
     recentEl.innerHTML = rows.length ? `<table><tr><th>رقم الفاتورة</th><th>العميل</th><th>الإجمالي</th><th>المتبقي</th><th>الحالة</th><th></th></tr>
       ${rows.map((s) => {
         const rem = remainingOf(s, payMap);
@@ -1158,7 +1162,7 @@ async function renderPOS() {
 // 8) المشتريات — قائمة فواتير الشراء من Firestore
 // ============================================================================
 async function renderPurchases() {
-  const list = await loadCollection('purchaseInvoices');
+  const list = (await loadCollection('purchaseInvoices')).filter((p) => !p.isManualDebt);
   const suppliers = await loadCollection('suppliers');
   const supName = (id) => (suppliers.find((s) => s.id === id) || {}).name_ar || '—';
   $('page').innerHTML = `
@@ -1222,14 +1226,14 @@ async function renderAccounts() {
   $('acc-debts-sup').addEventListener('click', () => go('debts-suppliers'));
 }
 async function renderReports() {
-  const sales = (await loadCollection('salesInvoices')).filter((s) => s.status === 'posted');
+  const sales = (await loadCollection('salesInvoices')).filter((s) => s.status === 'posted' && !s.isManualDebt);
   const byMonth = {};
   sales.forEach((s) => { const t = tsToDate(s.date || s.createdAt); const k = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`;
     byMonth[k] = (byMonth[k] || 0) + Number(s.totalPiasters || 0); });
   const rows = Object.entries(byMonth).sort();
   $('page').innerHTML = `
     <h2 class="page-title">📊 التقارير والتحليلات</h2>
-    <p class="page-sub">تقارير محسوبة من فواتير المبيعات المنشورة فقط — الفواتير الملغاة مستبعدة.</p>
+    <p class="page-sub">تقارير محسوبة من فواتير المبيعات المنشورة فقط — الفواتير الملغاة والمديونيات اليدوية مستبعدة.</p>
     <div class="card"><h3>المبيعات الشهرية</h3>
     ${rows.length ? `<table><tr><th>الشهر</th><th>إجمالي المبيعات</th></tr>
       ${rows.map(([m, v]) => `<tr><td>${m}</td><td class="num">${fmtEGP(v)}</td></tr>`).join('')}</table>`
@@ -1454,7 +1458,7 @@ async function renderAI() {
 async function answerAI(q) {
   const [sales, customers] = await Promise.all([loadCollection('salesInvoices'), loadCollection('customers')]);
   await loadProducts();
-  const posted = sales.filter((s) => s.status === 'posted');
+  const posted = sales.filter((s) => s.status === 'posted' && !s.isManualDebt);
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const todaySales = posted.filter((s) => tsToDate(s.date || s.createdAt) >= today)
     .reduce((a, s) => a + Number(s.totalPiasters || 0), 0);
