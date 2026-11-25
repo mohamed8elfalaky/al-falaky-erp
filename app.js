@@ -1643,6 +1643,7 @@ async function renderDebts(kind, selectedId = null) {
   $('page').innerHTML = `
     <h2 class="page-title">${title}</h2>
     <p class="page-sub">كل ${who} ورصيده المدين من الفواتير المفتوحة — المتبقي = الإجمالي − المدفوع عند الإنشاء − مجموع الدفعات المسجلة. اضغط على أي ${who} لعرض فواتيره ودفعاته وتسديد جزء.</p>
+    <div class="toolbar"><button class="btn small" id="debts-add-btn">➕ تسجيل مديونية</button></div>
     <div class="kpi-grid">
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(totalDebt)}<span class="unit">ج.م</span></div><div class="label">إجمالي المديونيات المفتوحة</div></div><div class="ico">💳</div></div>
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(open.length)}</div><div class="label">فاتورة مفتوحة</div></div><div class="ico">🧾</div></div>
@@ -1661,6 +1662,7 @@ async function renderDebts(kind, selectedId = null) {
     : emptyState('لا توجد مديونيات مفتوحة حالياً — كل الفواتير مسددة بالكامل.')}</div>`;
   document.querySelectorAll('[data-debt-open]').forEach((b) =>
     b.addEventListener('click', () => renderDebts(kind, b.dataset.debtOpen)));
+  $('debts-add-btn').addEventListener('click', () => openManualDebtForm(kind, null, () => renderDebts(kind)));
 }
 
 // --- تفاصيل مديونية جهة: فواتير مفتوحة + سجل دفعات + تسديد جزء ---
@@ -1684,12 +1686,13 @@ async function renderDebtDetail(kind, contactId) {
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtNum(list.length)}</div><div class="label">فاتورة مفتوحة</div></div><div class="ico">🧾</div></div>
       <div class="card kpi"><div class="kpi-text"><div class="value">${fmtEGPNum(myPayments.reduce((a, p) => a + Number(p.amountPiasters || 0), 0))}<span class="unit">ج.م</span></div><div class="label">إجمالي الدفعات المسجلة</div></div><div class="ico">💰</div></div>
     </div>
-    <div class="toolbar"><button class="btn small" id="print-statement-btn">🖨️ طباعة كشف الحساب</button></div>
+    <div class="toolbar"><button class="btn small" id="print-statement-btn">🖨️ طباعة كشف الحساب</button>
+    <button class="btn small" id="debt-add-btn">➕ تسجيل مديونية</button></div>
     <div class="card"><h3>الفواتير المفتوحة</h3>
     ${list.length ? `<table><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الاستحقاق</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th></th></tr>
       ${list.sort((a, b) => dueDateOf(a.inv) - dueDateOf(b.inv)).map(({ inv, remaining, paid }) => {
         const st = payStatusOf(Number(inv.totalPiasters || 0), paid);
-        return `<tr><td dir="ltr">${esc(inv.invoiceNumber || inv.id)}${demoBadge(inv)}</td>
+        return `<tr><td dir="ltr">${esc(inv.invoiceNumber || inv.id)}${demoBadge(inv)}${inv.isManualDebt ? ' <span class="badge">مديونية يدوية</span>' : ''}</td>
         <td>${tsToDate(inv.date || inv.createdAt).toLocaleDateString('ar-EG')}</td>
         <td>${dueDateOf(inv).toLocaleDateString('ar-EG')}</td>
         <td class="num">${fmtEGP(inv.totalPiasters)}</td><td class="num">${fmtEGP(paid)}</td>
@@ -1714,6 +1717,7 @@ async function renderDebtDetail(kind, contactId) {
       }).join('')}</table>`
     : emptyState('لا توجد دفعات مسجلة بعد لهذه الجهة.')}</div>`;
   $('back-debts').addEventListener('click', () => renderDebts(kind));
+  $('debt-add-btn').addEventListener('click', () => openManualDebtForm(kind, c, () => renderDebtDetail(kind, contactId)));
   $('print-statement-btn').addEventListener('click', () => printStatement(kind, c, list, myPayments, invById));
   document.querySelectorAll('[data-pay-inv]').forEach((b) => b.addEventListener('click', () => {
     const inv = list.find((x) => x.inv.id === b.dataset.payInv);
@@ -1793,7 +1797,82 @@ async function recordPayment(kind, contactId, inv, amountPiasters, dateTs, metho
   if (cashNote) alert(cashNote);
 }
 
-// ============================================================================
+// --- تسجيل مديونية يدوية (من غير فاتورة منتجات) ---
+// تُسجَّل كفاتورة مفتوحة isManualDebt (بلا بنود وبلا حركة مخزون) فيرجع رصيدها
+// في المديونيات والدفعات والطباعة تلقائياً، مع زيادة رصيد الجهة فوراً.
+let mdKind = 'customers', mdContact = null, mdContacts = [], mdOnDone = null;
+function contactSummaryHTML(c) {
+  return `<div class="list-row"><span>الاسم</span><b>${esc(c.name_ar)}</b></div>
+  <div class="list-row"><span>الهاتف</span><b dir="ltr">${esc(c.phone || '—')}</b></div>
+  <div class="list-row"><span>العنوان</span><b>${esc(c.address_ar || '—')}</b></div>
+  <div class="list-row"><span>الرصيد الحالي</span><b>${fmtEGP(c.currentBalancePiasters)}</b></div>`;
+}
+async function openManualDebtForm(kind, contact, onDone) {
+  mdKind = kind; mdContact = contact || null; mdOnDone = onDone || null;
+  const isCust = kind === 'customers';
+  $('manual-debt-title').textContent = `➕ تسجيل مديونية — ${isCust ? 'عميل' : 'مورد'}`;
+  $('md-date').value = dateInputVal(new Date());
+  $('md-amount').value = ''; $('md-reason').value = '';
+  hideError($('md-error'));
+  const picker = $('md-contact-picker'), summary = $('md-contact-summary');
+  if (mdContact) {
+    picker.style.display = 'none';
+    summary.innerHTML = contactSummaryHTML(mdContact);
+  } else {
+    picker.style.display = '';
+    mdContacts = await loadCollection(kind);
+    $('md-contact-select').innerHTML = mdContacts.map((c) => `<option value="${c.id}">${esc(c.name_ar)} — ${esc(c.phone || '')}</option>`).join('');
+    const first = mdContacts[0] || null;
+    mdContact = first;
+    summary.innerHTML = first ? contactSummaryHTML(first) : emptyState('لا يوجد عملاء/موردون بعد — أضف جهة أولاً.');
+    $('md-contact-select').onchange = (e) => {
+      mdContact = mdContacts.find((c) => c.id === e.target.value) || null;
+      if (mdContact) summary.innerHTML = contactSummaryHTML(mdContact);
+    };
+  }
+  $('manual-debt-modal').classList.remove('hidden');
+}
+$('manual-debt-cancel-btn').addEventListener('click', () => $('manual-debt-modal').classList.add('hidden'));
+$('manual-debt-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!mdContact) { showError($('md-error'), 'اختر العميل / المورد أولاً.'); return; }
+  const amount = toPiasters($('md-amount').value);
+  const reason = $('md-reason').value.trim();
+  const dateTs = parseDateInput($('md-date').value) || Timestamp.fromDate(new Date());
+  if (!amount || amount <= 0) { showError($('md-error'), 'أدخل مبلغاً أكبر من صفر.'); return; }
+  if (!reason) { showError($('md-error'), 'اكتب البيان / سبب المديونية.'); return; }
+  const isCust = mdKind === 'customers';
+  $('md-save').disabled = true; $('md-save').textContent = 'جارٍ الحفظ...';
+  try {
+    const num = 'DEBT-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(Date.now()).slice(-6);
+    const due = new Date(dateTs.toDate().getTime() + 30 * 86400000);
+    const batch = writeBatch(db);
+    const invRef = doc(collection(db, isCust ? 'salesInvoices' : 'purchaseInvoices'));
+    batch.set(invRef, {
+      orgId, branchId: DEFAULT_BRANCH,
+      ...(isCust ? { customerId: mdContact.id } : { supplierId: mdContact.id }),
+      invoiceNumber: num, date: dateTs, dueDate: Timestamp.fromDate(due),
+      status: 'posted', totalPiasters: amount, paidPiasters: 0, remainingPiasters: amount,
+      subtotalPiasters: amount, discountPiasters: 0, taxPiasters: 0,
+      isManualDebt: true, manualReason: reason, paymentMethod: 'credit',
+      createdBy: me.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    });
+    const snap = await getDoc(doc(db, mdKind, mdContact.id));
+    if (snap.exists()) {
+      const cur = Number(snap.data().currentBalancePiasters || 0);
+      batch.update(doc(db, mdKind, mdContact.id), { currentBalancePiasters: cur + amount, updatedAt: serverTimestamp() });
+    }
+    await batch.commit();
+    $('manual-debt-modal').classList.add('hidden');
+    alert(`تم تسجيل مديونية ${fmtEGP(amount)} على ${mdContact.name_ar} — رقمها ${num}.`);
+    const done = mdOnDone; mdOnDone = null; if (done) await done();
+  } catch (err) {
+    showError($('md-error'), firestoreErrorMessage(err));
+  } finally {
+    $('md-save').disabled = false; $('md-save').textContent = '✅ تسجيل المديونية';
+  }
+});
+
 // إنشاء فاتورة مباشرة (بدون سلة) — اختيار المنتج يضيفه للفاتورة فوراً
 // ============================================================================
 let invForm = null;       // { kind, lines: [{product, qty, unitPrice}], contactId }
@@ -2127,7 +2206,7 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
         <div class="inv-logo">الفلكي <span>لقطع غيار السيارات</span></div>
         <div class="inv-brand-en" dir="ltr">Al-Falaky Auto Spare Parts</div>
       </div>
-      <div class="inv-title">${isSales ? 'فاتورة مبيعات' : 'فاتورة مشتريات'}</div>
+      <div class="inv-title">${inv.isManualDebt ? 'مديونية يدوية' : (isSales ? 'فاتورة مبيعات' : 'فاتورة مشتريات')}</div>
     </div>
     <div class="inv-meta">
       <div><span>رقم الفاتورة:</span> <b dir="ltr">${esc(inv.invoiceNumber || inv.id)}</b></div>
@@ -2141,6 +2220,7 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
       <div><span>الهاتف:</span> <b dir="ltr">${esc(contact ? (contact.phone || '—') : '—')}</b></div>
       <div><span>العنوان:</span> <b>${esc(contact ? (contact.address_ar || '—') : '—')}</b></div>
     </div>
+    ${inv.isManualDebt ? `<div class="inv-notes">مديونية مسجلة يدوياً (بدون بنود منتجات) — البيان: <b>${esc(inv.manualReason || '—')}</b></div>` : `
     <table class="inv-table">
       <tr><th>#</th><th>الصنف</th><th>رقم القطعة</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr>
       ${items.map((it, i) => `<tr>
@@ -2149,7 +2229,7 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
         <td class="num">${fmtNum(it.quantity)}</td>
         <td class="num">${fmtEGP(it.unitPricePiasters)}</td>
         <td class="num">${fmtEGP(it.lineTotalPiasters)}</td></tr>`).join('')}
-    </table>
+    </table>`}
     <div class="inv-totals">
       <div><span>الإجمالي الفرعي:</span> <b>${fmtEGP(inv.subtotalPiasters)}</b></div>
       ${Number(inv.discountPiasters || 0) ? `<div><span>الخصم:</span> <b>− ${fmtEGP(inv.discountPiasters)}</b></div>` : ''}
