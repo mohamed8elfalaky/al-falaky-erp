@@ -2464,7 +2464,7 @@ function invoiceSheetHTML(kind, inv, items, contact, paid, remaining) {
     </div>
     ${inv.notes ? `<div class="inv-notes">ملاحظات: ${esc(inv.notes)}</div>` : ''}
     <div class="inv-foot">
-      <div>شكراً لتعاملكم مع الفلكي لقطع غيار السيارات</div>
+      <div>شكراً لتعاملكم مع الفلكي لقطع غيار السيارات</div>
       <div class="inv-sign"><span>توقيع المستلم: ....................</span><span>توقيع البائع: ....................</span></div>
     </div>
   </div>`;
@@ -2574,7 +2574,7 @@ function statementHTML(kind, contact, openList, myPayments, invById) {
       }).join('')}</table>
       <div class="inv-totals"><div><span>إجمالي الدفعات:</span> <b>${fmtEGP(totalPaid)}</b></div></div>`
     : '<p>لا توجد دفعات مسجلة.</p>'}
-    <div class="inv-foot"><div>كشف حساب صادر من نظام الفلكي لإدارة قطع غيار السيارات</div></div>
+    <div class="inv-foot"><div>كشف حساب صادر من نظام الفلكي لإدارة قطع غيار السيارات</div></div>
   </div>`;
 }
 function printStatement(kind, contact, openList, myPayments, invById) {
@@ -2633,6 +2633,49 @@ function fixArabicSpaces(root) {
 // فرصة كسر بعد كل شرطة في رقم فاتورة طويل، حتى يلتف داخل عمود ضيق في الـ PDF
 // (html2canvas لا يكسر الرقم الطويل بنفسه) — بلا أثر على الشاشة إن لم يحتج الكسر.
 function wbrHyphens(s) { return String(s == null ? '' : s).replace(/-/g, '-<wbr>'); }
+// ===== ترقيم PDF يدوي (jsPDF): مستند يقارب صفحة واحدة يُضغَط لصفحة واحدة؛
+// وإلا تُوضع الكتل كاملة (.inv-sheet) على الصفحات، ولا تُقسَّم كتلة إلا إذا
+// كانت هي نفسها أطول من الصفحة. لا يترك صفحة أخيرة شبه فارغة أبداً.
+// blocks: [{top, h}] بالبكسل داخل اللوحة (top بالنسبة لأعلى اللوحة). =====
+function pdfLayout(canvas, blocks) {
+  const PAGE_W = 210, PAGE_H = 297;
+  const totalHmm = (canvas.height / canvas.width) * PAGE_W;
+  let scale = 1;
+  if (totalHmm <= PAGE_H) scale = 1;
+  else if (totalHmm <= PAGE_H * 1.18) scale = PAGE_H / totalHmm;
+  else {
+    let p = Math.ceil(totalHmm / PAGE_H);
+    const lastH = totalHmm - (p - 1) * PAGE_H;
+    if (lastH < 20) { p -= 1; scale = (p * PAGE_H) / totalHmm; }
+  }
+  const imgW = PAGE_W * scale, imgH = totalHmm * scale;
+  const k = imgW / canvas.width; // مم لكل بكسل في اللوحة
+  const x0 = (PAGE_W - imgW) / 2;
+  const pages = [[]];
+  if (imgH <= PAGE_H) {
+    pages[0].push({ sx: 0, sy: 0, sw: canvas.width, sh: canvas.height, dx: x0, dy: 0, dw: imgW, dh: imgH });
+  } else {
+    let page = 0, yCur = 0;
+    for (const b of blocks) {
+      let remPx = b.h, srcY = b.top;
+      while (remPx > 0) {
+        const spaceMm = PAGE_H - yCur;
+        const spacePx = spaceMm / k;
+        if (remPx <= spacePx) {
+          pages[page].push({ sx: 0, sy: Math.round(srcY), sw: canvas.width, sh: Math.round(remPx), dx: x0, dy: yCur, dw: imgW, dh: remPx * k });
+          yCur += remPx * k; remPx = 0;
+        } else if (spaceMm >= 20) {
+          pages[page].push({ sx: 0, sy: Math.round(srcY), sw: canvas.width, sh: Math.round(spacePx), dx: x0, dy: yCur, dw: imgW, dh: spaceMm });
+          srcY += spacePx; remPx -= spacePx;
+          pages.push([]); page++; yCur = 0;
+        } else {
+          pages.push([]); page++; yCur = 0;
+        }
+      }
+    }
+  }
+  return { pages, imgW, imgH, scale };
+}
 async function downloadElementAsPDF(html, filename) {
   if (typeof html2pdf === 'undefined') {
     alert('تعذّر تحميل مكتبة PDF — تأكّد من الاتصال بالإنترنت ثم أعد المحاولة.');
@@ -2676,7 +2719,33 @@ async function downloadElementAsPDF(html, filename) {
       alert('تعذّر تصوير ورقة الفاتورة بشكل كامل — المحتوى خارج حدود الصفحة. حاول مرة أخرى، ولو استمرت المشكلة أعد تحميل الصفحة.');
       return;
     }
-    await worker.toPdf().save();
+    // ترقيم يدوي بـ jsPDF (يضغط المستند القريب من صفحة واحدة في صفحة واحدة
+    // فلا تبقى صفحة ثانية فارغة، ويبقي التذييل مع المحتوى قدر الإمكان).
+    // مهم: قِس حدود الكتل (.inv-sheet) هنا قبل إزالة الغلاف — فبعد فصله يصبح
+    // host.offsetHeight صفراً فينفجر معامل التحويل وتدور الحلقة للأبد.
+    if (window.jspdf && window.jspdf.jsPDF) {
+      const hostRect = host.getBoundingClientRect();
+      const fy = canvas.height / host.offsetHeight;
+      let blocks = [...host.querySelectorAll(':scope > .inv-sheet')].map((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: Math.round((r.top - hostRect.top) * fy), h: Math.round(r.height * fy) };
+      });
+      if (!blocks.length) blocks = [{ top: 0, h: canvas.height }];
+      const layout = pdfLayout(canvas, blocks);
+      const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      layout.pages.forEach((ops, pi) => {
+        if (pi > 0) pdf.addPage();
+        for (const op of ops) {
+          const tmp = document.createElement('canvas');
+          tmp.width = op.sw; tmp.height = op.sh;
+          tmp.getContext('2d').drawImage(canvas, op.sx, op.sy, op.sw, op.sh, 0, 0, op.sw, op.sh);
+          pdf.addImage(tmp.toDataURL('image/jpeg', 0.98), 'JPEG', op.dx, op.dy, op.dw, op.dh);
+        }
+      });
+      pdf.save(filename);
+    } else {
+      await worker.toPdf().save();
+    }
   } catch (err) {
     alert('تعذّر إنشاء ملف PDF: ' + (err && err.message ? err.message : 'خطأ غير معروف'));
   } finally {
@@ -2698,7 +2767,7 @@ async function downloadInvoicePDF(kind, invoiceId) {
       ${payments.map((p) => `<tr><td>${tsToDate(p.date || p.createdAt).toLocaleDateString('ar-EG')}</td>
       <td>${payMethodLabel(p.paymentMethod)}</td><td class="num">${fmtEGP(p.amountPiasters)}</td><td>${esc(p.notes || '')}</td></tr>`).join('')}</table>`
     : '<p>لا توجد دفعات لاحقة مسجلة على هذه الفاتورة.</p>'}
-    <p style="color:#111;margin:12px 0 0">حالة السداد: <b>${payStatusLabel(st)}</b> — المدفوع ${fmtEGP(paid)} من إجمالي ${fmtEGP(inv.totalPiasters)}، والمتبقي ${fmtEGP(remaining)}.</p>
+    <p style="color:#111;margin:12px 0 0">حالة السداد: <b>${payStatusLabel(st)}</b>، المدفوع ${fmtEGP(paid)} من إجمالي ${fmtEGP(inv.totalPiasters)}، والمتبقي ${fmtEGP(remaining)}.</p>
   </div>`;
   return downloadElementAsPDF(html, `${inv.invoiceNumber || inv.id}.pdf`);
 }
