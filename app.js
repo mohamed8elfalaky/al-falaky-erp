@@ -3138,10 +3138,7 @@ function openDeleteModal({ title, impactHTML, warning, confirmName, onConfirm })
   const warnEl = $('delete-blocker');
   if (warning) { warnEl.textContent = '⚠️ تحذير: ' + warning; warnEl.classList.remove('hidden'); }
   else warnEl.classList.add('hidden');
-  $('delete-reason').value = '';
-  $('delete-confirm').value = '';
-  $('delete-confirm').placeholder = `اكتب «${confirmName}» للتأكيد`;
-  $('delete-confirm-label').textContent = `اكتب «${confirmName}» للتأكيد *`;
+  $('delete-question').textContent = `هل تريد حذف «${confirmName}»؟`;
   hideError($('delete-error'));
   deleteModalExpected = confirmName;
   deleteModalOnConfirm = onConfirm;
@@ -3154,10 +3151,7 @@ $('delete-cancel-btn').addEventListener('click', () => {
   deleteModalExpected = '';
 });
 $('delete-confirm-btn').addEventListener('click', async () => {
-  const reason = $('delete-reason').value.trim();
-  const typed = $('delete-confirm').value.trim();
-  if (!reason) { showError($('delete-error'), 'اكتب سبب الحذف أولاً (يُحفظ في سجل التدقيق).'); return; }
-  if (typed !== deleteModalExpected) { showError($('delete-error'), `اكتب الاسم كما هو تماماً: «${deleteModalExpected}».`); return; }
+  const reason = 'حذف بتأكيد المالك (نعم/لا)'; // revision 11g: لا سبب ولا كتابة اسم
   const btn = $('delete-confirm-btn');
   btn.disabled = true; btn.textContent = '⏳ جارٍ الحذف...';
   try {
@@ -3168,7 +3162,7 @@ $('delete-confirm-btn').addEventListener('click', async () => {
   } catch (err) {
     showError($('delete-error'), firestoreErrorMessage(err));
   }
-  btn.disabled = false; btn.textContent = '🗑️ حذف نهائياً';
+  btn.disabled = false; btn.textContent = 'نعم، احذف';
 });
 
 // --- حذف سجل رئيسي (منتج/عميل/مورد/تصنيف/مخزن/فرع/حساب/علامة/سيارة) ---
@@ -3249,7 +3243,7 @@ async function deleteContactCascade(collName, docId, label) {
   const batches = Math.max(1, Math.ceil(myInvoices.length / CASCADE_BATCH));
   if (batches > 1) impact.push(`كثرة الفواتير: سيُنفَّذ الحذف في ${fmtNum(batches)} دفعة آمنة (كل دفعة معاملة مستقلة)؛ إن توقفت دفعة في المنتصف تبقى الفواتير المتبقية ويمكن إعادة المحاولة.`);
   const warning = cashWarn || stockWarn;
-  const impactHTML = `<p><b>سيُحذف نهائياً (مع كل ما يخصه):</b> ${esc(label)}</p><ul>${impact.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p class="note">الحذف نهائي ولا يمكن التراجع عنه. يُحفظ سجل تدقيق بالسبب والأثر. لن تبقى أي فاتورة أو دفعة «جهة محذوفة».</p>`;
+  const impactHTML = `<p><b>سيُحذف نهائياً (مع كل ما يخصه):</b> ${esc(label)}</p><ul>${impact.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p class="note">الحذف نهائي ولا يمكن التراجع عنه. يُحفظ سجل تدقيق بالأثر. لن تبقى أي فاتورة أو دفعة «جهة محذوفة».</p>`;
   openDeleteModal({
     title: `🗑️ حذف ${esc(label)} مع كل فواتيره`,
     impactHTML,
@@ -3410,7 +3404,7 @@ async function deleteMasterRecord(collName, docId, label) {
   } else {
     impact.push('سجل رئيسي — لا توجد فواتير أو أرصدة مرتبطة به مباشرةً.');
   }
-  const impactHTML = `<p><b>سيُحذف نهائياً:</b> ${esc(label)}</p><ul>${impact.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p class="note">الحذف نهائي ولا يمكن التراجع عنه. يُحفظ سجل تدقيق بالسبب والأثر.</p>`;
+  const impactHTML = `<p><b>سيُحذف نهائياً:</b> ${esc(label)}</p><ul>${impact.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p class="note">الحذف نهائي ولا يمكن التراجع عنه. يُحفظ سجل تدقيق بالأثر.</p>`;
   openDeleteModal({
     title: `🗑️ حذف ${esc(label)}`,
     impactHTML,
@@ -3520,7 +3514,7 @@ async function deleteInvoice(kind, inv) {
   if (Object.keys(stockByProduct).length) impact.push('ستُكتب حركة مخزون عكسية (adjustment) لكل صنف — الحركة الأصلية تبقى في السجل ولا تُحذف.');
   impact.push(`رصيد «${contactName}»: سيقل بمقدار المتبقي ${fmtEGP(remaining)} (تُلغى المديونية المفتوحة من هذه الفاتورة).`);
   const warning = cashBlocker || stockBlocker;
-  const impactHTML = `<p><b>ستُحذف نهائياً:</b> فاتورة ${esc(inv.invoiceNumber || inv.id)} (${isSales ? 'مبيعات' : 'مشتريات'})</p><ul>${impact.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p class="note">الحذف نهائي ولا يمكن التراجع عنه. يُحفظ سجل تدقيق بالسبب والأثر.</p>`;
+  const impactHTML = `<p><b>ستُحذف نهائياً:</b> فاتورة ${esc(inv.invoiceNumber || inv.id)} (${isSales ? 'مبيعات' : 'مشتريات'})</p><ul>${impact.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p class="note">الحذف نهائي ولا يمكن التراجع عنه. يُحفظ سجل تدقيق بالأثر.</p>`;
   openDeleteModal({
     title: `🗑️ حذف فاتورة ${esc(inv.invoiceNumber || inv.id)}`,
     impactHTML,
@@ -3636,7 +3630,7 @@ async function deletePayment(kind, payment) {
     if (contactSnap.exists()) contactName = contactSnap.data().name_ar || contactName;
   }
   impact.push(`رصيد «${contactName}»: سيزيد ${fmtEGP(amount)} (يعود الدين بمقدار الدفعة).`);
-  const impactHTML = `<p><b>ستُحذف نهائياً:</b> دفعة ${fmtEGP(amount)} (${payMethodLabel(payment.paymentMethod)})</p><ul>${impact.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p class="note">الحذف نهائي ولا يمكن التراجع عنه. يُحفظ سجل تدقيق بالسبب والأثر.</p>`;
+  const impactHTML = `<p><b>ستُحذف نهائياً:</b> دفعة ${fmtEGP(amount)} (${payMethodLabel(payment.paymentMethod)})</p><ul>${impact.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p class="note">الحذف نهائي ولا يمكن التراجع عنه. يُحفظ سجل تدقيق بالأثر.</p>`;
   openDeleteModal({
     title: '🗑️ حذف دفعة',
     impactHTML,
