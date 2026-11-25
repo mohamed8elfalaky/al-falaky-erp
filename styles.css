@@ -376,7 +376,8 @@ th { color: var(--muted); font-size: 13px; }
 /* تنزيل PDF: الورقة بعرض A4 بالظبط (794px) ومن غير أي تجاوز —
    الجداول كانت تتجاوز العرض (تخطيط auto) فتُقصّ الأعمدة اليسرى في RTL */
 .pdf-doc { width: 794px; max-width: 794px; overflow: hidden; }
-.pdf-doc .inv-sheet { width: 100% !important; max-width: 100%; padding: 18px 30px; }
+.pdf-doc .inv-sheet { width: 100% !important; max-width: 100%; padding: 18px 30px; line-height: 0; }
+.pdf-doc .inv-sheet > * { line-height: 1.4; }
 .pdf-doc .inv-table { table-layout: fixed; width: 100%; }
 .pdf-doc .inv-table th, .pdf-doc .inv-table td { overflow-wrap: anywhere; }
 .pdf-doc .stmt-table th:nth-child(1) { width: 18%; }
@@ -396,8 +397,12 @@ th { color: var(--muted); font-size: 13px; }
 .pdf-doc .inv-meta, .pdf-doc .inv-contact { display: block; }
 .pdf-doc .inv-meta > div, .pdf-doc .inv-contact > div { display: inline-block; margin: 4px 0 4px 28px; min-width: 0; overflow-wrap: anywhere; }
 .pdf-doc .inv-head { flex-wrap: wrap; }
-.pdf-doc .inv-head .inv-brand, .pdf-doc .inv-head .inv-title { flex-shrink: 0; }
+.pdf-doc .inv-head .inv-brand { flex: 0 0 380px; width: 380px; }
+.pdf-doc .inv-head .inv-title { flex-shrink: 0; font-size: 18px; padding: 6px 14px; }
 .pdf-doc .inv-logo, .pdf-doc .inv-brand-en { white-space: nowrap; }
+.pdf-doc .inv-logo { font-size: 20px; line-height: 1.25; }
+.pdf-doc .inv-logo span { font-size: 16px; }
+.pdf-doc .inv-brand-en { font-size: 11px; line-height: 1.25; margin-top: 2px; }
 .pdf-doc .inv-totals, .pdf-doc .inv-foot { line-height: 0; }
 .pdf-doc .inv-totals > div, .pdf-doc .inv-foot > div, .pdf-doc .inv-foot .inv-sign { line-height: 1.4; }
 .pdf-doc .inv-totals > div { padding: 2px 0; }

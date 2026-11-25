@@ -2636,8 +2636,11 @@ function wbrHyphens(s) { return String(s == null ? '' : s).replace(/-/g, '-<wbr>
 // ===== ترقيم PDF يدوي (jsPDF): مستند يقارب صفحة واحدة يُضغَط لصفحة واحدة؛
 // وإلا تُوضع الكتل كاملة (.inv-sheet) على الصفحات، ولا تُقسَّم كتلة إلا إذا
 // كانت هي نفسها أطول من الصفحة. لا يترك صفحة أخيرة شبه فارغة أبداً.
-// blocks: [{top, h}] بالبكسل داخل اللوحة (top بالنسبة لأعلى اللوحة). =====
-function pdfLayout(canvas, blocks) {
+// blocks: [{top, h}] بالبكسل داخل اللوحة (top بالنسبة لأعلى اللوحة).
+// breaks: إحداثيات y بالبكسل (مرتبة) يجوز القطع عندها — أسفل كل صف جدول
+// وأعلى كل كتلة — فيلتصق القطع بأقرب حد صف، فلا يُقطَع صف جدول أبداً
+// ولا يبقى سطر وحيد وحده على صفحة. =====
+function pdfLayout(canvas, blocks, breaks) {
   const PAGE_W = 210, PAGE_H = 297;
   const totalHmm = (canvas.height / canvas.width) * PAGE_W;
   let scale = 1;
@@ -2646,11 +2649,20 @@ function pdfLayout(canvas, blocks) {
   else {
     let p = Math.ceil(totalHmm / PAGE_H);
     const lastH = totalHmm - (p - 1) * PAGE_H;
-    if (lastH < 20) { p -= 1; scale = (p * PAGE_H) / totalHmm; }
+    if (lastH < 30) { p -= 1; scale = (p * PAGE_H) / totalHmm; }
   }
   const imgW = PAGE_W * scale, imgH = totalHmm * scale;
   const k = imgW / canvas.width; // مم لكل بكسل في اللوحة
   const x0 = (PAGE_W - imgW) / 2;
+  // أقرب حد قطع آمن عند y أو تحته (بالبكسل)؛ null إن لم يوجد حد صالح
+  // (يجب أن يترك 20مم على الأقل من المحتوى في الصفحة الحالية).
+  function snapBreak(y) {
+    if (!breaks || !breaks.length) return y;
+    const minY = 20 / k;
+    let best = null;
+    for (const b of breaks) { if (b <= y && b >= minY) best = b; else if (b > y) break; }
+    return best === null ? y : best;
+  }
   const pages = [[]];
   if (imgH <= PAGE_H) {
     pages[0].push({ sx: 0, sy: 0, sw: canvas.width, sh: canvas.height, dx: x0, dy: 0, dw: imgW, dh: imgH });
@@ -2665,8 +2677,11 @@ function pdfLayout(canvas, blocks) {
           pages[page].push({ sx: 0, sy: Math.round(srcY), sw: canvas.width, sh: Math.round(remPx), dx: x0, dy: yCur, dw: imgW, dh: remPx * k });
           yCur += remPx * k; remPx = 0;
         } else if (spaceMm >= 20) {
-          pages[page].push({ sx: 0, sy: Math.round(srcY), sw: canvas.width, sh: Math.round(spacePx), dx: x0, dy: yCur, dw: imgW, dh: spaceMm });
-          srcY += spacePx; remPx -= spacePx;
+          // قسّم الكتلة: ألصق القطع بحد صف جدول حتى لا يُقطَع صف
+          const cutY = snapBreak(srcY + spacePx);
+          const takePx = Math.max(1, Math.round(cutY - srcY));
+          pages[page].push({ sx: 0, sy: Math.round(srcY), sw: canvas.width, sh: takePx, dx: x0, dy: yCur, dw: imgW, dh: takePx * k });
+          srcY += takePx; remPx -= takePx;
           pages.push([]); page++; yCur = 0;
         } else {
           pages.push([]); page++; yCur = 0;
@@ -2731,7 +2746,15 @@ async function downloadElementAsPDF(html, filename) {
         return { top: Math.round((r.top - hostRect.top) * fy), h: Math.round(r.height * fy) };
       });
       if (!blocks.length) blocks = [{ top: 0, h: canvas.height }];
-      const layout = pdfLayout(canvas, blocks);
+      // حدود قطع آمنة: أسفل كل صف جدول وأعلى كل كتلة — حتى لا يُقطَع صف
+      const breaks = [];
+      host.querySelectorAll('.inv-table tr').forEach((tr) => {
+        const r = tr.getBoundingClientRect();
+        breaks.push(Math.round((r.bottom - hostRect.top) * fy));
+      });
+      blocks.forEach((b) => breaks.push(b.top));
+      breaks.sort((a, b) => a - b);
+      const layout = pdfLayout(canvas, blocks, breaks);
       const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
       layout.pages.forEach((ops, pi) => {
         if (pi > 0) pdf.addPage();
