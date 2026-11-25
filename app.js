@@ -1111,7 +1111,7 @@ async function renderPOS() {
     hideError($('pos-error'));
     if (!posCart.length) { showError($('pos-error'), 'السلة فارغة.'); return; }
     const subtotal = posCart.reduce((a, l) => a + l.qty * Number(l.product.sellingPricePiasters || 0), 0);
-    const paid = toPiasters($('pos-paid').value);
+    const paid = Math.min(subtotal, Math.max(0, toPiasters($('pos-paid').value)));
     const customerId = $('pos-customer').value || null;
     const invoiceNumber = 'SI-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(Date.now()).slice(-6);
     try {
@@ -1121,9 +1121,27 @@ async function renderPOS() {
         orgId, branchId: DEFAULT_BRANCH, invoiceNumber,
         idempotencyKey: invRef.id, customerId, createdBy: me.uid, status: 'posted',
         date: serverTimestamp(), subtotalPiasters: subtotal, discountPiasters: 0, taxPiasters: 0,
-        totalPiasters: subtotal, paidPiasters: paid, remainingPiasters: Math.max(0, subtotal - paid),
+        totalPiasters: subtotal, paidPiasters: 0, remainingPiasters: Math.max(0, subtotal - paid),
         paymentMethod: $('pos-pay').value, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
       });
+      // المدفوع الآن مستند دفعة حقيقي (لا paidPiasters) حتى يظهر في سجل الدفعات
+      if (paid > 0) {
+        const payRef = doc(collection(db, 'salesPayments'));
+        batch.set(payRef, {
+          orgId, branchId: DEFAULT_BRANCH, customerId, salesInvoiceId: invRef.id,
+          receivedBy: me.uid, amountPiasters: paid, paymentMethod: $('pos-pay').value,
+          date: Timestamp.fromDate(new Date()), notes: 'دفعة عند إنشاء الفاتورة',
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+        });
+      }
+      // رصيد العميل يزيد بالمتبقي فقط (مديونية جديدة)
+      if (customerId && subtotal - paid > 0) {
+        const snap = await getDoc(doc(db, 'customers', customerId));
+        if (snap.exists()) {
+          const cur = Number(snap.data().currentBalancePiasters || 0);
+          batch.update(doc(db, 'customers', customerId), { currentBalancePiasters: cur + (subtotal - paid), updatedAt: serverTimestamp() });
+        }
+      }
       posCart.forEach((l) => {
         const itemRef = doc(collection(db, 'salesInvoices', invRef.id, 'items'));
         batch.set(itemRef, {
@@ -1142,6 +1160,11 @@ async function renderPOS() {
         });
       });
       await batch.commit();
+      // أثر المدفوع الآن على الصندوق/البنك (أفضل جهد — لا يفشل الحفظ)
+      if (paid > 0) {
+        const cashNote = await applyCashMovement($('pos-pay').value, paid, 1);
+        if (cashNote) alert(cashNote);
+      }
       // ملاحظة: رصيد stockBalances يُحدَّث من الخادم الموثوق بناءً على حركة المخزون — قواعد Firestore تمنع الكتابة المباشرة من العميل.
       alert(`تم حفظ الفاتورة ${invoiceNumber} في Firestore.`);
       posCart = []; await loadProducts(); await renderPOS();
@@ -2126,8 +2149,16 @@ async function renderInvoiceForm(kind) {
   const refreshPayInputs = () => {
     const st = document.querySelector('input[name="inv-pay-status"]:checked');
     const paidInput = $('inv-paid-amount');
-    paidInput.disabled = !st || st.value !== 'partial';
-    if (st && st.value === 'credit') paidInput.value = 0;
+    if (st && st.value === 'paid') {
+      // مدفوع بالكامل: المبلغ هو الإجمالي نفسه — يُعرض في الحقل (معطّل) ولا يُكتب يدوياً
+      paidInput.disabled = true;
+      paidInput.value = (invFormTotals().total / 100).toFixed(2);
+    } else if (st && st.value === 'partial') {
+      paidInput.disabled = false; // جزئي: المبلغ قابل للكتابة
+    } else {
+      paidInput.disabled = true;
+      paidInput.value = 0;
+    }
     updateInvTotals();
   };
   document.querySelectorAll('input[name="inv-pay-status"]').forEach((r) => r.addEventListener('change', refreshPayInputs));
@@ -2207,7 +2238,7 @@ async function saveInvoiceForm() {
       orgId, branchId, invoiceNumber, idempotencyKey: invRef.id,
       createdBy: me.uid, status: 'posted', date: dateTs, dueDate: dueTs,
       subtotalPiasters: t.subtotal, discountPiasters: t.discount, taxPiasters: t.tax,
-      totalPiasters: t.total, paidPiasters: t.paid, remainingPiasters: t.remaining,
+      totalPiasters: t.total, paidPiasters: 0, remainingPiasters: t.remaining,
       paymentMethod: t.paid >= t.total ? payMethod : t.paid > 0 ? 'mixed' : 'credit',
       notes, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
     };
@@ -2248,6 +2279,21 @@ async function saveInvoiceForm() {
           referenceType: 'purchaseInvoice', referenceId: invRef.id, createdBy: me.uid,
           createdAt: serverTimestamp(), updatedAt: serverTimestamp()
         });
+      });
+    }
+    // المدفوع الآن يُسجَّل كمستند دفعة حقيقي (في نفس الـ batch) لا كـ paidPiasters،
+    // حتى يظهر في سجل الدفعات ويُشتق المتبقي منه بشكل صحيح — وإلا ظهرت الفاتورة
+    // «مدفوعة» بلا أي دفعة مسجلة. paidPiasters يبقى صفراً عند الإنشاء لهذا السبب.
+    if (t.paid > 0) {
+      const payRef = doc(collection(db, isSales ? 'salesPayments' : 'purchasePayments'));
+      batch.set(payRef, {
+        orgId, branchId,
+        ...(isSales
+          ? { customerId: contactId, salesInvoiceId: invRef.id, receivedBy: me.uid }
+          : { supplierId: contactId, purchaseInvoiceId: invRef.id, paidBy: me.uid }),
+        amountPiasters: t.paid, paymentMethod: payMethod, date: dateTs,
+        notes: 'دفعة عند إنشاء الفاتورة',
+        createdAt: serverTimestamp(), updatedAt: serverTimestamp()
       });
     }
     // رصيد الجهة يزيد بالمتبقي (مديونية جديدة) — ذرياً مع الفاتورة
